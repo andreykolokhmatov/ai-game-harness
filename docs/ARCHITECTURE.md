@@ -566,7 +566,7 @@ models:
   standard: claude-sonnet-5-5
 roles:
   planner:        {model: strong,   effort: high}
-  engineer:       {model: standard, effort: medium}
+  engineer:       {model: strong,   effort: medium}   # изменено 2026-10-05, см. ниже
   evaluator:      {model: strong,   effort: medium}
   debugger:       {model: strong,   effort: high}
   release_writer: {model: standard, effort: low}
@@ -578,6 +578,8 @@ escalation:
   - {tier: 2, role: debugger, effort: high}       # свежая сессия, сначала диагноз
   - {tier: 3, role: debugger, effort: xhigh, model: frontier, enabled: false}
 ```
+
+**Изменение 2026-10-05 (решение пользователя):** Engineer по умолчанию на Opus 5.5 medium. Данные первого прогона: за сессию Engineer'а ~24K токенов вывода против ~500K чтения кэша, а чтение кэша у Opus 5.5 и Sonnet 5.5 стоит одинаково. Калибровка 6.3 остаётся и может вернуть Sonnet по данным.
 
 ### 6.2 Политика эскалации
 
