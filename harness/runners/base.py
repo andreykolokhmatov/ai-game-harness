@@ -55,6 +55,7 @@ class AgentResult:
     duration_s: float = 0.0
     permission_denials: list[Any] = field(default_factory=list)
     infra_error_kind: str | None = None  # rate_limit, overloaded, auth, network, ...
+    rate_limit: dict[str, Any] | None = None  # rate_limit_info when the subscription limit was hit
     error: str | None = None
 
     def to_event_data(self) -> dict[str, Any]:
