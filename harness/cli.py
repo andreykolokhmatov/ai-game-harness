@@ -35,7 +35,13 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     from harness.verify import godot
     from harness.verify.basic import run_basic_verify
 
+    from harness.doctor import check_sandbox
+
     project = open_project(cfg, args.project)
+    sandbox = check_sandbox(cfg)
+    if sandbox.status == "fail":
+        print(f"bash sandbox: {sandbox.detail}\n  -> {sandbox.hint}", file=sys.stderr)
+        return 2
     godot_bin = godot.resolve_bin(cfg.godot)
     if godot_bin is None:
         print("Godot binary not found; run `harness doctor`", file=sys.stderr)

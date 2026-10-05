@@ -135,7 +135,12 @@ def check_display() -> Check:
     return Check("display", "warn", "no xvfb-run and no DISPLAY: screenshots unavailable", "install xvfb")
 
 
-def check_sandbox() -> Check:
+USERNS_RESTRICT = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+
+
+def check_sandbox(cfg: Config) -> Check:
+    if not cfg.raw.get("sandbox", True):
+        return Check("bash sandbox", "warn", "disabled in config (sandbox: false): isolation relies on permissions only")
     if sys.platform == "win32":
         return Check(
             "bash sandbox",
@@ -147,7 +152,20 @@ def check_sandbox() -> Check:
         return Check("bash sandbox", "ok", "seatbelt (built into macOS)")
     missing = [tool for tool in ("bwrap", "socat") if not shutil.which(tool)]
     if missing:
-        return Check("bash sandbox", "warn", f"missing: {', '.join(missing)}", "install bubblewrap and socat")
+        return Check("bash sandbox", "fail", f"missing: {', '.join(missing)}", "install bubblewrap and socat, or set sandbox: false")
+    try:
+        restricted = USERNS_RESTRICT.read_text(encoding="utf-8").strip() == "1"
+    except OSError:
+        restricted = False
+    if restricted:
+        # Ubuntu's AppArmor profile lets bwrap create a user namespace but not a nested one,
+        # and Claude Code applies seccomp from a nested one: every sandboxed Bash call fails.
+        return Check(
+            "bash sandbox",
+            "fail",
+            "kernel.apparmor_restrict_unprivileged_userns=1 breaks the Claude Code sandbox (nested user namespace)",
+            "set sandbox: false in config/local.yaml, or allow unprivileged user namespaces",
+        )
     return Check("bash sandbox", "ok", "bubblewrap + socat")
 
 
@@ -179,7 +197,7 @@ def run_checks(cfg: Config) -> list[Check]:
         lambda: check_claude(cfg),
         lambda: check_godot(cfg),
         check_display,
-        check_sandbox,
+        lambda: check_sandbox(cfg),
         check_ffmpeg,
         check_playwright,
         lambda: check_workspace(cfg),
