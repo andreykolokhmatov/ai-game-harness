@@ -9,6 +9,7 @@ import sys
 from harness import __version__
 from harness.config import Config, ConfigError, load_config
 from harness.gitops.checkpoints import GitError
+from harness.orchestrator.pipeline import PipelineError
 from harness.project import ProjectError, create_project, open_project
 from harness.state.events import CorruptLogError
 from harness.state.lock import LockedError
@@ -57,6 +58,15 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     state = pipeline.run()
     print_status(project.name, state)
     return 0 if state["state"] in ("HUMAN_REVIEW", "DONE") else 1
+
+
+def cmd_revise(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import request_revision
+
+    project = open_project(cfg, args.project)
+    request_revision(project, args.comment)
+    print(f"revision recorded; next: harness run {project.name}")
+    return 0
 
 
 def print_status(name: str, st: dict) -> None:
@@ -144,6 +154,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("project")
         p.set_defaults(func=cmd_run)
 
+    p = sub.add_parser("revise", help="at HUMAN_REVIEW: send the game back to the engineer with a comment")
+    p.add_argument("project")
+    p.add_argument("comment")
+    p.set_defaults(func=cmd_revise)
+
     p = sub.add_parser("status", help="show project state")
     p.add_argument("project")
     p.add_argument("--json", action="store_true")
@@ -161,6 +176,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args, load_config())
-    except (ConfigError, ProjectError, LockedError, CorruptLogError, GitError) as exc:
+    except (ConfigError, ProjectError, LockedError, CorruptLogError, GitError, PipelineError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
