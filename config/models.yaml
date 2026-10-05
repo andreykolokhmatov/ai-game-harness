@@ -1,0 +1,22 @@
+# The only place with model IDs. Roles refer to aliases from `models`.
+
+models:
+  frontier: claude-fable-5-1
+  strong: claude-opus-5-5
+  standard: claude-sonnet-5-5
+
+roles:
+  planner:        {model: strong,   effort: high}
+  engineer:       {model: standard, effort: medium}
+  evaluator:      {model: strong,   effort: medium}
+  debugger:       {model: strong,   effort: high}
+  release_writer: {model: standard, effort: low}
+  final_gate:     {model: standard, effort: low}
+
+fallback: [standard]
+
+escalation:
+  - {tier: 0, role: engineer, effort: medium}
+  - {tier: 1, role: engineer, effort: high}
+  - {tier: 2, role: debugger, effort: high}
+  - {tier: 3, role: debugger, effort: xhigh, model: frontier, enabled: false}

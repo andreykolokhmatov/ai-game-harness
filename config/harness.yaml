@@ -1,0 +1,35 @@
+# Harness settings. Machine-specific overrides go to config/local.yaml (not in Git).
+# Environment overrides: HARNESS_WORKSPACE, GODOT_BIN, CLAUDE_BIN.
+
+workspace: workspace                 # relative to the Harness repo root, or absolute
+
+godot:
+  version: "4.4"                     # pin: the binary version must be 4.4 or 4.4.x
+  bin: null                          # null: GODOT_BIN, then PATH (godot, godot4)
+
+claude:
+  bin: claude                        # name in PATH or a path
+
+auth: subscription                   # subscription | api_key
+claude_config: inherit               # inherit | isolated
+
+usage_limit:
+  on_hit: pause                      # pause | wait
+
+assets:
+  paid_generation: ask               # off | ask | auto
+  paid_budget_usd: 5                 # money for paid asset generation only, per project
+
+limits:
+  max_tokens_per_milestone: null
+  project_wall_clock_h: 12
+  fix_attempts_per_milestone: 4
+  escalate_after_attempts: 2
+  run_timeout_min: {planner: 20, engineer: 60, evaluator: 20}
+  idle_output_timeout_min: 10
+  max_turns: {planner: 40, engineer: 250, evaluator: 80}
+  circuit_breaker_same_fingerprint: 3
+  no_progress_attempts: 2
+
+gates:
+  human_review_after_prototype: true
