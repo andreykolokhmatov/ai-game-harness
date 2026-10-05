@@ -124,6 +124,8 @@ class Pipeline:
                 failures=last.get("digest") or "(no details)",
             )
             self._agent_step(st, "fix", prompt)
+        elif phase == "revise":
+            self._agent_step(st, "revise", render("tasks/revise", comment=st["review_comment"] or ""))
         elif phase == "verify":
             self._verify(st)
         else:
@@ -330,6 +332,24 @@ class Pipeline:
             self.block(f"verify still failing after {self.max_fix_attempts} fix attempts")
         else:
             self.enter("MILESTONE", milestone=st["milestone"], phase="fix")
+
+
+def request_revision(project: Project, comment: str) -> None:
+    """Record the human decision `revise` at HUMAN_REVIEW; the next `run` does the work."""
+    comment = comment.strip()
+    if not comment:
+        raise PipelineError("revise needs a comment describing what to change")
+    with ProjectLock(project.lock_path):
+        st = project.state()
+        if st["state"] != "HUMAN_REVIEW":
+            raise PipelineError(f"revise is possible only at HUMAN_REVIEW, the project is in {st['state']}")
+        log = project.log()
+        log.append("HUMAN_DECISION", {"decision": "revise", "comment": comment}, project=project.name)
+        log.append(
+            "STATE_ENTERED",
+            {"state": "MILESTONE", "milestone": st["milestone"], "phase": "revise"},
+            project=project.name,
+        )
 
 
 def utc_from_epoch(ts: float | None) -> str | None:

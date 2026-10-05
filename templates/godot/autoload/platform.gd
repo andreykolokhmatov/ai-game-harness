@@ -4,10 +4,26 @@ extends Node
 
 signal pause_requested(reason: String)
 signal resume_requested(reason: String)
+## Emitted when the player switches between touch and keyboard/mouse.
+signal input_mode_changed(touch: bool)
 
 const SAVE_PATH: String = "user://save.json"
 
 var backend: String = "mock"
+## True when on-screen touch controls should be shown.
+var touch_mode: bool = false
+
+
+func _ready() -> void:
+	touch_mode = DisplayServer.is_touchscreen_available()
+
+
+func _input(event: InputEvent) -> void:
+	# Touch emulated from the mouse has DEVICE_ID_EMULATION: that is still a desktop player.
+	if event is InputEventScreenTouch and event.device != InputEvent.DEVICE_ID_EMULATION:
+		_set_touch_mode(true)
+	elif event is InputEventKey or event is InputEventJoypadButton:
+		_set_touch_mode(false)
 
 
 func _notification(what: int) -> void:
@@ -52,6 +68,12 @@ func load_data() -> Dictionary:
 	var text: String = FileAccess.get_file_as_string(SAVE_PATH)
 	var parsed: Variant = JSON.parse_string(text)
 	return parsed if parsed is Dictionary else {}
+
+
+func _set_touch_mode(value: bool) -> void:
+	if value != touch_mode:
+		touch_mode = value
+		input_mode_changed.emit(value)
 
 
 func _set_muted(muted: bool) -> void:

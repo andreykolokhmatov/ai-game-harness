@@ -17,6 +17,7 @@ Godot often exits with code 0 even after errors. Treat any line starting with `E
 - Autoloads already present: `Platform` (saves, language, focus/pause signals; always use `Platform.save_data()` / `Platform.load_data()` for progress) and `Game` (game-wide state; keep `game_state()` returning a Dictionary that describes the current game).
 - Call `Platform.loading_ready()` once when the game is playable. Pause gameplay and audio on `Platform.pause_requested`, resume on `Platform.resume_requested`.
 - Input: define actions in `project.godot` `[input]` and read them with `Input.is_action_pressed("name")`. Every action must also work by touch (on-screen buttons or gestures) because mobile browsers have no keyboard.
+- On-screen touch controls are visible only in touch mode: show them when `Platform.touch_mode` is true, and update on `Platform.input_mode_changed`. A desktop player with keyboard and mouse must not see them.
 - Layout: base resolution 1280x720, stretch mode `canvas_items`, aspect `expand`. UI must stay inside the screen at 16:9, 9:16 and 4:3 (use anchors and containers).
 - `.tscn` files are text: keep `ext_resource` ids and `load_steps` consistent. When a scene is complex, build nodes from code in `_ready()` instead of writing long `.tscn` files by hand.
 - Commit the `.uid` files Godot creates next to scripts and resources. Never commit `.godot/`.

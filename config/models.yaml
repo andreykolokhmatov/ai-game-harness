@@ -7,7 +7,7 @@ models:
 
 roles:
   planner:        {model: strong,   effort: high}
-  engineer:       {model: standard, effort: medium}
+  engineer:       {model: strong,   effort: medium}   # Opus: cache reads cost the same as Sonnet, fewer fix loops
   evaluator:      {model: strong,   effort: medium}
   debugger:       {model: strong,   effort: high}
   release_writer: {model: standard, effort: low}

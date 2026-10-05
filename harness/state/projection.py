@@ -29,6 +29,7 @@ INITIAL_STATE: State = {
     "last_verify": None,
     "verify_fingerprints": [],  # failure fingerprints of consecutive failed verifies
     "paused": None,  # where to return after PAUSED
+    "review_comment": None,  # last `harness revise` comment
     "open_step": None,
     "last_checkpoint": None,
     "blocked_reason": None,
@@ -100,7 +101,7 @@ def _step_finished(s: State, e: Event) -> None:
     s["open_step"] = None
     s["counters"]["steps_finished"] += 1
     # Only steps that really ran to an end count as attempts.
-    if e["data"].get("kind") in ("implement", "fix") and e["data"].get("status") not in NOT_AN_ATTEMPT:
+    if e["data"].get("kind") in ("implement", "fix", "revise") and e["data"].get("status") not in NOT_AN_ATTEMPT:
         s["attempt"] += 1
 
 
@@ -140,6 +141,13 @@ def _rollback(s: State, e: Event) -> None:
     s["milestone"] = e["data"].get("milestone", s["milestone"])
 
 
+def _human_decision(s: State, e: Event) -> None:
+    if e["data"].get("decision") == "revise":
+        s["review_comment"] = e["data"].get("comment")
+        s["attempt"] = 0  # a new round of work with its own fix budget
+        s["verify_fingerprints"] = []
+
+
 def _blocked(s: State, e: Event) -> None:
     s["state"] = "BLOCKED"
     s["blocked_reason"] = e["data"].get("reason")
@@ -156,6 +164,7 @@ REDUCERS: dict[str, Callable[[State, Event], None]] = {
     "ROLLBACK": _rollback,
     "BLOCKED": _blocked,
     "PAUSED": _paused,
+    "HUMAN_DECISION": _human_decision,
     "VERIFY_FINISHED": _verify_finished,
 }
 

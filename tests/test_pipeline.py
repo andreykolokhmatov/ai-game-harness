@@ -164,3 +164,28 @@ def test_manual_changes_stop_the_pipeline(cfg):
     with pytest.raises(PipelineError, match="uncommitted changes"):
         pipeline.run()
     assert not project.lock_path.exists()
+
+
+def test_revise_after_human_review(cfg):
+    from harness.orchestrator.pipeline import request_revision
+
+    runner = MockRunner([MockResponse(files={"game.gd": "v1"}), MockResponse(files={"game.gd": "v2"})])
+    project, pipeline = make(cfg, runner, verify_requires("game.gd"))
+    assert pipeline.run()["state"] == "HUMAN_REVIEW"
+    with pytest.raises(PipelineError):
+        request_revision(project, "   ")
+    request_revision(project, "hide touch buttons on desktop")
+    st = pipeline.run()
+    assert st["state"] == "HUMAN_REVIEW"
+    assert "hide touch buttons on desktop" in runner.requests[1].prompt
+    assert st["attempt"] == 1
+    assert project.repo().tag_sha("h/m1.revise.1")
+    assert (project.repo_dir / "game.gd").read_text(encoding="utf-8") == "v2"
+
+
+def test_revise_only_at_human_review(cfg):
+    from harness.orchestrator.pipeline import request_revision
+
+    project, _ = make(cfg, MockRunner([]), verify_requires("game.gd"))
+    with pytest.raises(PipelineError, match="only at HUMAN_REVIEW"):
+        request_revision(project, "change it")
