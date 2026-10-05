@@ -30,6 +30,36 @@ class ProcResult:
         return not self.timed_out and self.returncode == 0
 
 
+def pid_alive(pid: int) -> bool:
+    """True if a process with this pid exists on this machine."""
+    if pid <= 0:
+        return False
+    if IS_WINDOWS:
+        # os.kill on Windows terminates the process, so ask the OS directly.
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by another user
+    return True
+
+
 def new_group_kwargs() -> dict:
     """Popen kwargs that start the child in its own process group."""
     if IS_WINDOWS:
