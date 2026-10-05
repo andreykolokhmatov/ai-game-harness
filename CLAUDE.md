@@ -1,6 +1,6 @@
 # AI Game Development Harness
 
-Локальный open-source Harness: короткая идея игры → цепочка AI-агентов (через Claude Code как внешний процесс) → готовый к публикации Godot-проект. Специализация: Godot → Yandex Games. Архитектура модульная.
+Локальный source-available Harness (продавать Harness нельзя, игры с ним делать и продавать можно; см. docs/ARCHITECTURE.md, раздел 8.1): короткая идея игры → цепочка AI-агентов (через Claude Code как внешний процесс) → готовый к публикации Godot-проект. Специализация: Godot → Yandex Games. Архитектура модульная.
 
 Исходное ТЗ: docs/original_brief.md. Актуальный план: docs/PLAN_v2.md (при расхождении приоритет у PLAN_v2).
 
