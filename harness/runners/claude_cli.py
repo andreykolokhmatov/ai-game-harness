@@ -160,6 +160,7 @@ def to_result(
             duration_s=duration_s,
             permission_denials=list(r.get("permission_denials") or []),
             infra_error_kind=parser.infra_error_kind if status != "ok" else None,
+            rate_limit=parser.rate_limit,
             error=None if status == "ok" else str(r.get("result") or r.get("subtype")),
         )
 
@@ -178,6 +179,7 @@ def to_result(
         usage_by_model=parser.fallback_usage(),
         duration_s=duration_s,
         infra_error_kind=parser.infra_error_kind,
+        rate_limit=parser.rate_limit,
         error=stderr_tail.strip()[-2000:] or f"no result event (exit code {exit_code})",
     )
 

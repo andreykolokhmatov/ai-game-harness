@@ -13,6 +13,8 @@ from harness.state.events import EventLog
 from harness.state.snapshot import read_json, write_json_atomic
 
 State = dict[str, Any]
+
+NOT_AN_ATTEMPT = ("interrupted", "usage_limit", "infra_error", "cancelled")
 Event = dict[str, Any]
 
 INITIAL_STATE: State = {
@@ -22,6 +24,11 @@ INITIAL_STATE: State = {
     "created_at": None,
     "state": None,
     "milestone": None,
+    "phase": None,  # inside a milestone: implement | verify | fix
+    "attempt": 0,  # finished implement/fix steps in the current milestone
+    "last_verify": None,
+    "verify_fingerprints": [],  # failure fingerprints of consecutive failed verifies
+    "paused": None,  # where to return after PAUSED
     "open_step": None,
     "last_checkpoint": None,
     "blocked_reason": None,
@@ -45,16 +52,43 @@ def _project_created(s: State, e: Event) -> None:
 
 
 def _state_entered(s: State, e: Event) -> None:
-    s["state"] = e["data"]["state"]
-    if "milestone" in e["data"]:
-        s["milestone"] = e["data"]["milestone"]
+    d = e["data"]
+    s["state"] = d["state"]
+    if "milestone" in d and d["milestone"] != s["milestone"]:
+        s["milestone"] = d["milestone"]
+        s["attempt"] = 0
+        s["verify_fingerprints"] = []
+        s["last_verify"] = None
+    s["phase"] = d.get("phase")
+    s["paused"] = None
     if s["state"] != "BLOCKED":
         s["blocked_reason"] = None
+
+
+def _paused(s: State, e: Event) -> None:
+    s["paused"] = {
+        "state": s["state"],
+        "milestone": s["milestone"],
+        "phase": s["phase"],
+        "reason": e["data"].get("reason"),
+        "resets_at": e["data"].get("resets_at"),
+    }
+    s["state"] = "PAUSED"
+
+
+def _verify_finished(s: State, e: Event) -> None:
+    d = e["data"]
+    s["last_verify"] = {"sha": d["sha"], "passed": d["passed"], "report": d.get("report"), "digest": d.get("digest")}
+    if d["passed"]:
+        s["verify_fingerprints"] = []
+    else:
+        s["verify_fingerprints"] = [*s["verify_fingerprints"], d.get("fingerprint")]
 
 
 def _step_started(s: State, e: Event) -> None:
     s["open_step"] = {
         "step_id": e["step_id"],
+        "kind": e["data"].get("kind"),
         "started_seq": e["seq"],
         "start_commit": e["data"].get("start_commit"),
         "session_id": None,
@@ -65,6 +99,9 @@ def _step_started(s: State, e: Event) -> None:
 def _step_finished(s: State, e: Event) -> None:
     s["open_step"] = None
     s["counters"]["steps_finished"] += 1
+    # Only steps that really ran to an end count as attempts.
+    if e["data"].get("kind") in ("implement", "fix") and e["data"].get("status") not in NOT_AN_ATTEMPT:
+        s["attempt"] += 1
 
 
 def _agent_started(s: State, e: Event) -> None:
@@ -118,6 +155,8 @@ REDUCERS: dict[str, Callable[[State, Event], None]] = {
     "CHECKPOINT_CREATED": _checkpoint_created,
     "ROLLBACK": _rollback,
     "BLOCKED": _blocked,
+    "PAUSED": _paused,
+    "VERIFY_FINISHED": _verify_finished,
 }
 
 

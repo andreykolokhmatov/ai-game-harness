@@ -363,6 +363,12 @@ class AgentResult:
 
 Bash-sandbox на Linux: запись только cwd + temp, `denyRead` для `~/.ssh`, `~/.aws`, `~/.config` и т. п., сеть закрыта (allowlist пуст; для генерации ассетов через API отдельный инструмент Harness, не прямой интернет у агента). На Windows sandbox недоступен: Harness пишет предупреждение в `doctor` и в событие запуска.
 
+**Уточнения по итогам этапа 2 (2026-10-05):**
+- **Sandbox на Ubuntu.** При `kernel.apparmor_restrict_unprivileged_userns=1` профиль AppArmor `bwrap-userns-restrict` разрешает `bwrap` создать user namespace, но запрещает вложенный. Sandbox Claude Code применяет seccomp из вложенного namespace, поэтому каждая Bash-команда агента падает (`apply-seccomp: write /proc/self/setgroups ... Permission denied`). `harness doctor` это обнаруживает, `harness run` с неработающим sandbox не стартует. Варианты: `sandbox: false` в `config/local.yaml` (изоляция только правами) или разрешить unprivileged user namespaces (решение владельца машины).
+- **Проверка скриптов.** `godot --check-only --script` не видит автозагрузки (`Identifier not found: Platform`). Вместо него Harness запускает свой SceneTree-скрипт `harness/verify/gdscript/check_scripts.gd`, он компилирует все `.gd` с зарегистрированными автозагрузками.
+- **Код выхода Godot.** `--import` и запуск с runtime-ошибкой выходят с кодом 0. Вердикт VERIFY строится по строкам `ERROR:`/`SCRIPT ERROR:` в логе.
+- **Scratch-папка для Engineer.** Агент пытается писать одноразовые тест-скрипты в `$TMPDIR` через heredoc, это отклоняется. Сделать на этапе 3: отдельная scratch-папка вне repo через `--add-dir` с правом записи.
+
 Перед каждым запуском Harness проверяет, что в repo не появились `.claude/settings*.json` с хуками и `.mcp.json` (их агенту создавать запрещено; если появились, это нарушение, файл удаляется, событие `POLICY_VIOLATION`).
 
 ### 4.8 Git и чекпоинты
