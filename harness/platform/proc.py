@@ -67,6 +67,19 @@ def new_group_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+def interrupt(proc: subprocess.Popen) -> None:
+    """Soft stop (Ctrl+C equivalent) for a child started with new_group_kwargs()."""
+    if proc.poll() is not None:
+        return
+    try:
+        if IS_WINDOWS:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            os.killpg(proc.pid, signal.SIGINT)
+    except (ProcessLookupError, OSError):
+        pass
+
+
 def terminate_tree(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
     """Ask the process group to stop, then kill it after grace_s."""
     if proc.poll() is not None:
