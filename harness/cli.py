@@ -30,34 +30,56 @@ def cmd_create(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def _verify_fn(cfg: Config, only: list[str] | None = None):
+    """(project dir, sha, report dir) -> VerifyReport, or an error message."""
+    from harness.platform.display import find_display
+    from harness.verify import godot
+    from harness.verify.suite import run_verify
+
+    godot_bin = godot.resolve_bin(cfg.godot)
+    if godot_bin is None:
+        return None, "Godot binary not found; run `harness doctor`"
+    runner = godot.GodotRunner(godot_bin)
+    mode = str((cfg.raw.get("verify") or {}).get("screenshots", "auto"))
+    display = find_display() if mode == "auto" else None
+    return (lambda repo, sha, out: run_verify(runner, repo, sha, out, display=display, only=only)), godot_bin
+
+
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.doctor import check_sandbox
     from harness.orchestrator.pipeline import Pipeline
     from harness.runners.claude_cli import ClaudeCliRunner
-    from harness.verify import godot
-    from harness.verify.basic import run_basic_verify
-
-    from harness.doctor import check_sandbox
 
     project = open_project(cfg, args.project)
     sandbox = check_sandbox(cfg)
     if sandbox.status == "fail":
         print(f"bash sandbox: {sandbox.detail}\n  -> {sandbox.hint}", file=sys.stderr)
         return 2
-    godot_bin = godot.resolve_bin(cfg.godot)
-    if godot_bin is None:
-        print("Godot binary not found; run `harness doctor`", file=sys.stderr)
+    verify, godot_bin = _verify_fn(cfg)
+    if verify is None:
+        print(godot_bin, file=sys.stderr)
         return 2
-    godot_runner = godot.GodotRunner(godot_bin)
-    pipeline = Pipeline(
-        cfg,
-        project,
-        ClaudeCliRunner([cfg.claude_bin]),
-        verify=lambda repo, sha, out: run_basic_verify(godot_runner, repo, sha, out),
-        godot_bin=godot_bin,
-    )
+    pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=verify, godot_bin=godot_bin)
     state = pipeline.run()
     print_status(project.name, state)
     return 0 if state["state"] in ("HUMAN_REVIEW", "DONE") else 1
+
+
+def cmd_test(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import run_tests
+
+    project = open_project(cfg, args.project)
+    verify, detail = _verify_fn(cfg, args.scenario or None)
+    if verify is None:
+        print(detail, file=sys.stderr)
+        return 2
+    report, report_dir = run_tests(project, verify)
+    width = max(len(c.id) for c in report.checks)
+    for check in report.checks:
+        print(f"{check.status.upper():<7} {check.id:<{width}}  {check.summary}")
+    print(f"\n{'PASS' if report.passed else 'FAIL'}  {report.sha[:12]}  rendering: {report.display or 'headless'}")
+    print(f"report: {report_dir / 'report.md'}")
+    return 0 if report.passed else 1
 
 
 def cmd_revise(args: argparse.Namespace, cfg: Config) -> int:
@@ -153,6 +175,11 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("project")
         p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("test", help="run only the checks (no agents) on the current game commit")
+    p.add_argument("project")
+    p.add_argument("--scenario", action="append", help="scenario id or file name; repeat for several")
+    p.set_defaults(func=cmd_test)
 
     p = sub.add_parser("revise", help="at HUMAN_REVIEW: send the game back to the engineer with a comment")
     p.add_argument("project")

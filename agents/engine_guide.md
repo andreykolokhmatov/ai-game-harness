@@ -6,6 +6,10 @@ Engine: Godot $godot_version, GDScript only (C# cannot export to the web in Godo
 - Import assets and parse everything: `godot --headless --path . --import`
 - Compile every script with autoloads: `godot --headless --path . --script "$check_scripts"`
 - Run the main scene for 2 seconds: `godot --headless --path . --fixed-fps 60 --quit-after 120`
+- Run all test scenarios: `godot --headless --path . --fixed-fps 60 --script "$scenario_runner" -- --scenario tests/scenarios`
+- Run one scenario: `godot --headless --path . --fixed-fps 60 --script "$scenario_runner" -- --scenario tests/scenarios/<name>.json`
+
+Scratch directory for throwaway files (test scripts, notes, experiments): `$scratch`. Do not put temporary files in the game directory.
 
 Godot often exits with code 0 even after errors. Treat any line starting with `ERROR:`, `SCRIPT ERROR:` or `Parse Error` as a failure. The Harness checks exactly these lines.
 
@@ -22,3 +26,37 @@ Godot often exits with code 0 even after errors. Treat any line starting with `E
 - `.tscn` files are text: keep `ext_resource` ids and `load_steps` consistent. When a scene is complex, build nodes from code in `_ready()` instead of writing long `.tscn` files by hand.
 - Commit the `.uid` files Godot creates next to scripts and resources. Never commit `.godot/`.
 - Graphics without external assets: shapes from `_draw()`, `Polygon2D`, `ColorRect`, `StyleBoxFlat`, or SVG files you write yourself. Give every placeholder its final size in pixels.
+
+## Game Contract and test scenarios
+Tests never look at node names. They use the contract in `docs/CONTRACT.yaml`, which you keep in sync with the game:
+- `input_actions`: every InputMap action the game reads.
+- `state`: what `Game.game_state()` returns, as dot paths with types (`string`, `int`, `float`, `bool`, `vec2`, `vec3`, `list`, `dict`, `any`). Include what proves the game works: current screen (`scene`), player position and alive/lives, score, level, win/lose flags, paused.
+- `commands`: debug commands handled by `Game.harness_command(command, args) -> bool` (return true when handled). Add the ones tests need to reach a situation quickly, for example `set_level`, `kill_player`, `add_score`. Commands must only change state, never fake a result.
+
+Scenarios are JSON files in `tests/scenarios/`, one behaviour each. Write one for every mechanic and for the core loop (start, play, lose or win, restart). The Harness runs them on every check, with real rendering, and also takes screenshots.
+
+```json
+{
+  "description": "holding right moves the player; falling into the pit ends the run",
+  "seed": 1,
+  "viewport": [1280, 720],
+  "steps": [
+    {"wait": 30},
+    {"hold": "move_right", "frames": 60},
+    {"assert": ["state.player.position.x > 400", "state.player.alive"]},
+    {"press": "jump"},
+    {"tap": [640, 360]},
+    {"click": [100, 650]},
+    {"key": "ESCAPE"},
+    {"command": "kill_player", "args": []},
+    {"wait_until": "state.scene == 'game_over'", "timeout": 120},
+    {"snapshot": "after_death"},
+    {"screenshot": "game_over"}
+  ]
+}
+```
+
+- Frames run at a fixed 60 per second. `press` and `hold` use InputMap action names; `key` uses key names (`SPACE`, `LEFT`, `ESCAPE`); `tap` is a touch, `click` a left mouse click, both in viewport pixels.
+- `assert` and `wait_until` are Godot `Expression`s over `state` (the result of `game_state()`): `state.score >= 10`, `state.player.position.x > 100`, `state.items.size() == 3`. Engine singletons are not available in expressions.
+- A scenario fails on a false assert, a `wait_until` timeout, an unknown action or command, or any `ERROR:` line from the engine while it runs.
+- Use `seed` (global RNG) when the scenario depends on randomness; use `randf()`/`randi()` in the game rather than a separately seeded RandomNumberGenerator.

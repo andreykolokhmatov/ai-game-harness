@@ -64,6 +64,7 @@ def read_version(bin_path: Path, timeout_s: float = 30) -> str | None:
 
 
 CHECK_SCRIPTS_GD = Path(__file__).with_name("gdscript") / "check_scripts.gd"
+SCENARIO_RUNNER_GD = Path(__file__).with_name("gdscript") / "scenario_runner.gd"
 
 # Godot often exits 0 after script and import errors, so the log decides.
 _ERROR_PREFIXES = ("SCRIPT ERROR:", "ERROR:", "USER ERROR:", "USER SCRIPT ERROR:")
@@ -111,8 +112,20 @@ class GodotRunner:
     def __init__(self, bin_path: Path):
         self.bin_path = bin_path
 
-    def run(self, project: Path, args: list[str], *, timeout_s: float, headless: bool = True) -> GodotRun:
-        full = [str(self.bin_path), *(["--headless"] if headless else []), "--path", str(project), *args]
+    def run(
+        self,
+        project: Path,
+        args: list[str],
+        *,
+        timeout_s: float,
+        headless: bool = True,
+        display_prefix: list[str] | None = None,
+    ) -> GodotRun:
+        """headless=False renders through display_prefix (e.g. xvfb-run) with dummy audio:
+        without it Godot logs ALSA errors on machines that have no sound card."""
+        mode = ["--headless"] if headless else ["--audio-driver", "Dummy"]
+        prefix = [] if headless else list(display_prefix or [])
+        full = [*prefix, str(self.bin_path), *mode, "--path", str(project), *args]
         result = proc.run(full, timeout_s=timeout_s, cwd=project)
         output = result.stdout + result.stderr
         errors, warnings = parse_log(output)

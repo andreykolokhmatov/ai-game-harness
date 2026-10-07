@@ -23,6 +23,8 @@ def verify_requires(filename: str, message: str = "ERROR: game.gd is missing"):
 
     def verify(repo: Path, sha: str, out: Path) -> VerifyReport:
         ok = (repo / filename).exists()
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "report.md").write_text(f"report for {sha}\n", encoding="utf-8")
         check = CheckResult("scripts", "pass" if ok else "fail", "ok" if ok else message,
                             errors=[] if ok else [{"message": message, "at": None}])
         return VerifyReport(sha=sha, passed=ok, checks=[check])
@@ -72,6 +74,12 @@ def test_fix_loop_gets_failure_digest(cfg):
     fix_prompt = runner.requests[1].prompt
     assert "game.gd is missing" in fix_prompt
     assert types(project).count("VERIFY_FINISHED") == 2
+    # The engineer gets a writable scratch dir holding a copy of the last report.
+    last_report = project.scratch_dir / "last_report"
+    assert runner.requests[1].add_dirs == [project.scratch_dir]
+    assert last_report.as_posix() in fix_prompt
+    assert (last_report / "report.md").read_text(encoding="utf-8").startswith("report for ")
+    assert "scenario_runner.gd" in runner.requests[1].system_append_file.read_text(encoding="utf-8")
 
 
 def test_circuit_breaker_blocks_on_same_failure(cfg):

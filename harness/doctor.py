@@ -126,13 +126,14 @@ def check_godot(cfg: Config) -> list[Check]:
 
 
 def check_display() -> Check:
-    if sys.platform != "linux":
-        return Check("display", "ok", "windowed capture (no Xvfb needed on this OS)")
-    if shutil.which("xvfb-run"):
-        return Check("display", "ok", "xvfb-run")
-    if os.environ.get("DISPLAY"):
-        return Check("display", "warn", f"no xvfb-run, will use DISPLAY={os.environ['DISPLAY']}", "install xvfb")
-    return Check("display", "warn", "no xvfb-run and no DISPLAY: screenshots unavailable", "install xvfb")
+    from harness.platform.display import find_display
+
+    display = find_display()
+    if not display.available:
+        return Check("display", "warn", f"{display.detail}: screenshots unavailable", "install xvfb")
+    if sys.platform == "linux" and not display.prefix:
+        return Check("display", "warn", f"no xvfb-run, will use {display.detail}", "install xvfb")
+    return Check("display", "ok", display.detail if display.prefix else "windowed capture (no Xvfb needed on this OS)")
 
 
 USERNS_RESTRICT = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")

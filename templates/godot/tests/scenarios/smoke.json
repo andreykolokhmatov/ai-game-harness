@@ -1,0 +1,8 @@
+{
+  "description": "The main scene starts and reports its state.",
+  "steps": [
+    {"wait": 30},
+    {"assert": "state.scene != ''"},
+    {"screenshot": "start"}
+  ]
+}

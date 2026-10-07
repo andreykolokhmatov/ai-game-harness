@@ -1,0 +1,8 @@
+{
+  "description": "Harness built-in: start the main scene, let it run one second, capture the screen and the state.",
+  "steps": [
+    {"wait": 60},
+    {"snapshot": "after_1s"},
+    {"screenshot": "start"}
+  ]
+}

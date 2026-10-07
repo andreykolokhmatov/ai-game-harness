@@ -39,7 +39,14 @@ class AgentRequest:
         data = asdict(self)
         data["env"] = sorted(self.env)
         data["prompt"] = f"<{len(self.prompt)} chars>"
-        return {k: str(v) if isinstance(v, Path) else v for k, v in data.items()}
+        def plain(v: Any) -> Any:
+            if isinstance(v, Path):
+                return str(v)
+            if isinstance(v, list):
+                return [plain(x) for x in v]
+            return v
+
+        return {k: plain(v) for k, v in data.items()}
 
 
 @dataclass

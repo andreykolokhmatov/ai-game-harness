@@ -5,49 +5,25 @@ Later stages add scenarios, screenshots and web checks to the same report.
 
 from __future__ import annotations
 
-import configparser
-from dataclasses import asdict, dataclass, field
+import re
 from pathlib import Path
-from typing import Literal
 
 from harness.state.snapshot import write_json_atomic
 from harness.verify.godot import GodotRun, GodotRunner
-
-CheckStatus = Literal["pass", "fail", "skipped"]
-
-
-@dataclass
-class CheckResult:
-    id: str
-    status: CheckStatus
-    summary: str
-    errors: list[dict] = field(default_factory=list)
-    warnings_count: int = 0
-    duration_s: float = 0.0
-    log: str | None = None  # path relative to the report directory
+from harness.verify.report import CheckResult, VerifyReport, failure_digest  # noqa: F401 (re-export)
 
 
-@dataclass
-class VerifyReport:
-    sha: str
-    passed: bool
-    checks: list[CheckResult]
-
-    def failures(self) -> list[CheckResult]:
-        return [c for c in self.checks if c.status == "fail"]
-
-    def to_dict(self) -> dict:
-        return asdict(self)
+_MAIN_SCENE = re.compile(r'^run/main_scene\s*=\s*"([^"]*)"', re.MULTILINE)
 
 
 def _main_scene(project: Path) -> str | None:
-    """run/main_scene from project.godot, e.g. 'res://scenes/main.tscn'."""
-    parser = configparser.ConfigParser(strict=False, interpolation=None)
-    text = (project / "project.godot").read_text(encoding="utf-8")
-    # project.godot has a few top-level lines before the first section.
-    parser.read_string("[_top]\n" + text)
-    value = parser.get("application", "run/main_scene", fallback=None)
-    return value.strip('"') if value else None
+    """run/main_scene from project.godot, e.g. 'res://scenes/main.tscn'.
+
+    project.godot is not INI: values span several lines ([input] events), so configparser
+    cannot read it. The key is unique to the [application] section.
+    """
+    match = _MAIN_SCENE.search((project / "project.godot").read_text(encoding="utf-8"))
+    return match.group(1) if match and match.group(1) else None
 
 
 def check_structure(project: Path) -> CheckResult:
@@ -98,13 +74,3 @@ def run_basic_verify(godot: GodotRunner, project: Path, sha: str, out_dir: Path)
     report = VerifyReport(sha=sha, passed=all(c.status == "pass" for c in checks), checks=checks)
     write_json_atomic(out_dir / "verify.json", report.to_dict())
     return report
-
-
-def failure_digest(report: VerifyReport, max_errors: int = 20) -> str:
-    """Short text for the Engineer's fix prompt."""
-    lines = []
-    for check in report.failures():
-        lines.append(f"- {check.id}: {check.summary}")
-        for err in check.errors[:max_errors]:
-            lines.append(f"    {err['message']}" + (f"  (at {err['at']})" if err.get("at") else ""))
-    return "\n".join(lines)

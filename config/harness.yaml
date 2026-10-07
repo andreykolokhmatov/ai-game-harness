@@ -10,6 +10,9 @@ godot:
 claude:
   bin: claude                        # name in PATH or a path
 
+verify:
+  screenshots: auto                 # auto: render with Xvfb/window when available | off: headless only
+
 sandbox: true                        # Bash sandbox for agents (Linux/macOS; ignored on Windows)
 
 auth: subscription                   # subscription | api_key

@@ -1,0 +1,14 @@
+# Game Contract: the interface tests use instead of node names.
+# The Engineer keeps it in sync with the game; the Harness checks it on every verify.
+
+# InputMap actions the game reads (each must exist in project.godot [input]).
+input_actions: []
+
+# Game.game_state() keys as dot paths, with a type each:
+# string | int | float | bool | vec2 | vec3 | list | dict | any
+state:
+  scene: string
+
+# Debug commands handled by Game.harness_command(command, args).
+# Example: set_level: {args: [level], description: "jump to a level"}
+commands: {}

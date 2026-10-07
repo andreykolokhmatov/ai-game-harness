@@ -54,6 +54,11 @@ class Project:
         return self.harness_dir / "reports"
 
     @property
+    def scratch_dir(self) -> Path:
+        """Writable for agents (--add-dir): throwaway files and a copy of the last verify report."""
+        return self.harness_dir / "scratch"
+
+    @property
     def bin_dir(self) -> Path:
         return self.harness_dir / "bin"
 

@@ -1,0 +1,14 @@
+{
+  "description": "holding move_right moves the dot right; teleport works",
+  "steps": [
+    {"snapshot": "start"},
+    {"hold": "move_right", "frames": 60},
+    {"assert": ["state.player.position.x > 350", "state.player.position.y == 360"]},
+    {"command": "teleport", "args": [600, 100]},
+    {"assert": "state.player.position == Vector2(600, 100)"},
+    {"tap": [640, 360]},
+    {"wait_until": "state.taps == 1", "timeout": 10},
+    {"assert": "state.touch_mode"},
+    {"screenshot": "end"}
+  ]
+}
