@@ -197,6 +197,9 @@ def test_usage_limit_pauses_until_reset(cfg):
     st = pipeline.run()
     assert st["state"] == "HUMAN_REVIEW"
     assert st["attempt"] == 1  # the limited run did not count
+    limited = runner.requests[0]
+    assert runner.requests[1].resume_session_id == limited.session_id  # the same session continues
+    assert "interrupted" in runner.requests[1].prompt
 
 
 def test_manual_changes_stop_the_pipeline(cfg):

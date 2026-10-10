@@ -32,6 +32,7 @@ INITIAL_STATE: State = {
     "last_failure": None,  # {source: verify | eval, sha, digest, report}: what the next fix step gets
     "verify_fingerprints": [],  # fingerprints of consecutive failed checks (verify or eval) in this milestone
     "paused": None,  # where to return after PAUSED
+    "resume_session": None,  # session the usage limit stopped: the next engineer step continues it
     "review_comment": None,  # last `harness revise` comment
     "open_step": None,
     "last_checkpoint": None,
@@ -67,6 +68,7 @@ def _state_entered(s: State, e: Event) -> None:
         s["last_failure"] = None
     s["phase"] = d.get("phase")
     s["paused"] = None
+    s["resume_session"] = d.get("resume_session")
     if s["state"] != "BLOCKED":
         s["blocked_reason"] = None
 
@@ -78,6 +80,7 @@ def _paused(s: State, e: Event) -> None:
         "phase": s["phase"],
         "reason": e["data"].get("reason"),
         "resets_at": e["data"].get("resets_at"),
+        "session_id": e["data"].get("session_id"),
     }
     s["state"] = "PAUSED"
 
@@ -102,6 +105,7 @@ def _eval_finished(s: State, e: Event) -> None:
 
 
 def _step_started(s: State, e: Event) -> None:
+    s["resume_session"] = None
     s["open_step"] = {
         "step_id": e["step_id"],
         "kind": e["data"].get("kind"),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from harness import __version__
 from harness.config import Config, ConfigError, load_config
@@ -48,7 +49,7 @@ def _verify_fn(cfg: Config, only: list[str] | None = None):
 
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     from harness.doctor import check_sandbox
-    from harness.orchestrator.pipeline import Pipeline
+    from harness.orchestrator.pipeline import Pipeline, utc_from_epoch
     from harness.runners.claude_cli import ClaudeCliRunner
 
     project = open_project(cfg, args.project)
@@ -61,7 +62,16 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
         print(godot_bin, file=sys.stderr)
         return 2
     pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=verify, godot_bin=godot_bin)
-    state = pipeline.run()
+    wait = args.wait or str((cfg.raw.get("usage_limit") or {}).get("on_hit", "pause")) == "wait"
+    while True:
+        state = pipeline.run()
+        resets_at = (state.get("paused") or {}).get("resets_at") if state["state"] == "PAUSED" else None
+        if not (wait and resets_at):
+            break
+        delay = max(30.0, float(resets_at) - time.time() + 60)  # a minute after the reset, to be safe
+        print(f"paused ({state['paused'].get('reason')}); waiting {delay / 60:.0f} min until "
+              f"{utc_from_epoch(float(resets_at) + 60)}", flush=True)
+        time.sleep(delay)
     print_status(project.name, state)
     return 0 if state["state"] in ("HUMAN_REVIEW", "DONE") else 1
 
@@ -196,6 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (("run", "run or continue the pipeline"), ("resume", "alias for run")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("project")
+        p.add_argument("--wait", action="store_true", help="on a usage-limit pause, wait for the reset and continue")
         p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("test", help="run only the checks (no agents) on the current game commit")

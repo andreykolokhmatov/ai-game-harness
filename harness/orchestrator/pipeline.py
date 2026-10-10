@@ -152,8 +152,14 @@ class Pipeline:
         plan = planner.load_plan(self.project.artifacts_dir)
         m = planner.milestone(plan, milestone_id)
         first = plan["milestones"][0]["id"] == milestone_id
-        context = ("The project is still the bare template: build the game from it." if first else
-                   "Earlier milestones are done and accepted: keep everything that works.")
+        checkpoint = (self.state()["last_checkpoint"] or {}).get("commit")
+        if checkpoint and self.project.repo().head() != checkpoint:
+            context = ("Work on this milestone has already started (an earlier run stopped): read `docs/PROGRESS.md` "
+                       "and `git log` first, then continue.")
+        elif first:
+            context = "The project is still the bare template: build the game from it."
+        else:
+            context = "Earlier milestones are done and accepted: keep everything that works."
         return render("tasks/milestone", milestone_id=m["id"], title=m["title"], goal=m["goal"],
                       criteria=planner.criteria_text(m["criteria"]), context=context)
 
@@ -270,7 +276,8 @@ class Pipeline:
         resets_at = paused.get("resets_at")
         if resets_at and self.clock() < float(resets_at):
             return False
-        self.enter(paused.get("state") or "MILESTONE", milestone=paused.get("milestone"), phase=paused.get("phase"))
+        self.enter(paused.get("state") or "MILESTONE", milestone=paused.get("milestone"), phase=paused.get("phase"),
+                   resume_session=paused.get("session_id"))
         return True
 
     # ---- agent step ----------------------------------------------------
@@ -296,6 +303,9 @@ class Pipeline:
             start_commit = repo.head()
         if interruptions is None:
             interruptions, self._carry_interruptions = self._carry_interruptions, 0
+        if resume_session is None and st.get("resume_session") and kind in ENGINEER_KINDS:
+            # The usage limit stopped this step's session: continue it instead of starting over.
+            resume_session, prompt = st["resume_session"], render("tasks/resume")
         milestone = st["milestone"]
         step_id = step_id or f"{milestone}.{kind}.{st['attempt'] + 1}"
         self.emit(
@@ -319,17 +329,18 @@ class Pipeline:
         self._after_agent(result)
 
     def _after_agent(self, result: AgentResult) -> None:
-        if self._handled_failure(result):
+        if self._handled_failure(result, resumable=True):
             return
         st = self.state()
         self.enter("MILESTONE", milestone=st["milestone"], phase="verify")
 
-    def _handled_failure(self, result: AgentResult) -> bool:
+    def _handled_failure(self, result: AgentResult, resumable: bool = False) -> bool:
         """Usage limit, infrastructure errors and cancels: True when the caller must stop here.
         The same phase then runs again (or after PAUSED); these do not count as attempts."""
         if result.status == "usage_limit":
             resets_at = (result.rate_limit or {}).get("resetsAt")
-            self.emit("PAUSED", {"reason": "usage_limit", "resets_at": resets_at})
+            self.emit("PAUSED", {"reason": "usage_limit", "resets_at": resets_at,
+                                 "session_id": result.session_id if resumable else None})
             return True
         if result.status == "infra_error":
             if result.infra_error_kind in ("auth", "billing"):
