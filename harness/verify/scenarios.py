@@ -94,6 +94,7 @@ def run_scenario(
         timeout_s=_timeout_s(data),
         headless=not rendered,
         display_prefix=display.prefix if display else None,
+        fresh_user_data=True,
     )
     log = out_dir / "logs" / f"scenario_{scenario_id}.log"
     log.parent.mkdir(parents=True, exist_ok=True)

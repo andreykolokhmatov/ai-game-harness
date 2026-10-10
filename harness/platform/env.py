@@ -75,3 +75,14 @@ def write_render_shim(bin_dir: Path, name: str, godot: Path, display_prefix: lis
     shim.write_text(f'#!/bin/sh\nexec {cmd} "$@"\n', encoding="utf-8")
     shim.chmod(0o755)
     return shim
+
+
+def user_data_env(root: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment that moves Godot's user:// (saves, settings) under root.
+
+    Linux: user:// lives in $XDG_DATA_HOME/godot/app_userdata; Windows: %APPDATA%/Godot/app_userdata.
+    Do not use it for exports: export templates are looked up in the same data directory.
+    """
+    env = dict(os.environ if base is None else base)
+    env["APPDATA" if sys.platform == "win32" else "XDG_DATA_HOME"] = str(root)
+    return env

@@ -102,3 +102,16 @@ def test_screenshot_with_display(game, tmp_path):
     [shot] = sr.result["screenshots"]
     assert shot["size"] == [720, 1280] and shot["distinct_colors"] > 1
     assert (tmp_path / "screenshots" / "move__end.png").is_file()
+
+
+@needs_godot
+def test_scenario_runs_get_a_fresh_user_dir(tmp_path):
+    from harness.verify.godot import GodotRunner
+
+    script = tmp_path / "game" / "where.gd"
+    repo = copy_game(FIXTURES / "mover", tmp_path / "game")
+    script.write_text('extends SceneTree\n\nfunc _init() -> void:\n\tprint("USERDIR=", OS.get_user_data_dir())\n\tquit()\n')
+    runner = GodotRunner(godot_bin())
+    fresh = runner.run(repo, ["--script", str(script)], timeout_s=60, fresh_user_data=True).output
+    shared = runner.run(repo, ["--script", str(script)], timeout_s=60).output
+    assert "harness_userdata_" in fresh and "harness_userdata_" not in shared
