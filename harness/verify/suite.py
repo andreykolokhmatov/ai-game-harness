@@ -4,6 +4,7 @@ Order and gates:
   structure -> import (hard gate) -> scripts -> smoke
   -> screens (built-in smoke scenario per viewport; gives the game_state() snapshot)
   -> contract -> scenarios (one check per tests/scenarios/*.json)
+  -> web_export -> web_desktop, web_mobile, web_focus (when web=True, see harness.verify.web)
 Runtime checks after `scripts` are skipped when scripts do not compile: every scenario
 would fail with the same compile errors.
 """
@@ -20,6 +21,7 @@ from harness.verify.contract import check_contract
 from harness.verify.godot import GodotRunner
 from harness.verify.markdown import write_markdown
 from harness.verify.report import CheckResult, VerifyReport
+from harness.verify.web import CHECK_IDS as WEB_CHECKS, run_web_checks
 from harness.verify.scenarios import BUILTIN_SMOKE, VIEWPORTS, ScenarioRun, describe_failure, discover, run_scenario
 
 
@@ -101,26 +103,29 @@ def run_verify(
     *,
     display: Display | None,
     only: list[str] | None = None,
+    web: bool = False,
 ) -> VerifyReport:
-    """display=None: everything headless, no screenshots. only: scenario ids or file names to run."""
+    """display=None: everything headless, no screenshots. only: scenario ids or file names to run.
+    web: also export the game and check it in Chromium (slow: ~30 s)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     checks = [check_structure(repo)]
     shots: list[dict] = []
+    later = ("screens", "contract", "scenarios", *(WEB_CHECKS if web else ()))
     if checks[0].status != "pass":
-        checks += [_skipped(c, "structure failed") for c in ("import", "scripts", "smoke", "screens", "contract", "scenarios")]
+        checks += [_skipped(c, "structure failed") for c in ("import", "scripts", "smoke", *later)]
         return _finish(sha, checks, shots, display, out_dir)
 
     imported = godot.import_project(repo)
     checks.append(_from_run("import", imported, out_dir, "imported"))
     if imported.timed_out or imported.returncode != 0:
-        checks += [_skipped(c, "import failed") for c in ("scripts", "smoke", "screens", "contract", "scenarios")]
+        checks += [_skipped(c, "import failed") for c in ("scripts", "smoke", *later)]
         return _finish(sha, checks, shots, display, out_dir)
 
     scripts = _from_run("scripts", godot.check_scripts(repo), out_dir, "all scripts compile")
     checks.append(scripts)
     checks.append(_from_run("smoke", godot.smoke(repo), out_dir, "main scene ran 120 frames without errors"))
     if scripts.status == "fail":
-        checks += [_skipped(c, "scripts do not compile") for c in ("screens", "contract", "scenarios")]
+        checks += [_skipped(c, "scripts do not compile") for c in later]
         return _finish(sha, checks, shots, display, out_dir)
 
     screens, state, shots = check_screens(godot, repo, out_dir, display)
@@ -141,6 +146,10 @@ def run_verify(
             checks.append(scenario_check(sr, repo, out_dir))
             for image in (sr.result or {}).get("screenshots") or []:
                 shots.append({**image, "file": _rel(Path(image["file"]), out_dir), "scenario": sr.id})
+    if web:
+        web_checks, web_shots = run_web_checks(godot, repo, out_dir)
+        checks += web_checks
+        shots += web_shots
     return _finish(sha, checks, shots, display, out_dir)
 
 

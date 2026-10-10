@@ -16,6 +16,7 @@ Godot often exits with code 0 even after errors. Treat any line starting with `E
 ## Project rules
 - Renderer is Compatibility (WebGL 2). Do not switch to Forward+ or Mobile.
 - The web export is single-threaded: no `Thread`, no `WorkerThreadPool`.
+- Keep `export_presets.cfg` and its `Web` preset. The Harness exports the game and opens it in Chromium on a desktop and on an emulated phone: the page must load with no console errors (every `push_error` and engine error counts), a tap must switch `Platform.touch_mode` on, and audio must be muted while the page is hidden. `Platform` already does the muting through page events; do not remove that code.
 - Audio on the web: no AudioEffects on buses (reverb, delay and similar are unsupported). Browsers start audio only after the first user input.
 - Static typing is required: `untyped_declaration` is an error. Write `var speed: float = 200.0`, `func f(x: int) -> void:`. Avoid `:=` when the right side is a Variant (dictionary access, `get()`, untyped array element): inference fails to compile.
 - Autoloads already present: `Platform` (saves, language, focus/pause signals; always use `Platform.save_data()` / `Platform.load_data()` for progress) and `Game` (game-wide state; keep `game_state()` returning a Dictionary that describes the current game).

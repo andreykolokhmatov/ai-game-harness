@@ -12,10 +12,17 @@ const SAVE_PATH: String = "user://save.json"
 var backend: String = "mock"
 ## True when on-screen touch controls should be shown.
 var touch_mode: bool = false
+## False while the page is hidden or the window has lost focus.
+var focused: bool = true
+
+# JavaScriptBridge callbacks must stay referenced, or the browser calls freed objects.
+var _js_callbacks: Array[JavaScriptObject] = []
 
 
 func _ready() -> void:
 	touch_mode = DisplayServer.is_touchscreen_available()
+	if OS.has_feature("web"):
+		_listen_to_page()
 
 
 func _input(event: InputEvent) -> void:
@@ -26,13 +33,13 @@ func _input(event: InputEvent) -> void:
 		_set_touch_mode(false)
 
 
+# Desktop builds get these notifications. The web build does not: there the page events
+# from _listen_to_page() do the same job.
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
-		_set_muted(true)
-		pause_requested.emit("focus_lost")
+		_set_focused(false)
 	elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
-		_set_muted(false)
-		resume_requested.emit("focus_gained")
+		_set_focused(true)
 
 
 ## Call once the game has loaded and can be played.
@@ -68,6 +75,42 @@ func load_data() -> Dictionary:
 	var text: String = FileAccess.get_file_as_string(SAVE_PATH)
 	var parsed: Variant = JSON.parse_string(text)
 	return parsed if parsed is Dictionary else {}
+
+
+func _listen_to_page() -> void:
+	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
+	var document: JavaScriptObject = JavaScriptBridge.get_interface("document")
+	var on_visibility: JavaScriptObject = JavaScriptBridge.create_callback(_on_page_visibility)
+	var on_blur: JavaScriptObject = JavaScriptBridge.create_callback(_on_page_blur)
+	var on_focus: JavaScriptObject = JavaScriptBridge.create_callback(_on_page_focus)
+	_js_callbacks.assign([on_visibility, on_blur, on_focus])
+	document.addEventListener("visibilitychange", on_visibility)
+	window.addEventListener("blur", on_blur)
+	window.addEventListener("focus", on_focus)
+
+
+func _on_page_visibility(_args: Array) -> void:
+	var document: JavaScriptObject = JavaScriptBridge.get_interface("document")
+	_set_focused(not bool(document.hidden))
+
+
+func _on_page_blur(_args: Array) -> void:
+	_set_focused(false)
+
+
+func _on_page_focus(_args: Array) -> void:
+	_set_focused(true)
+
+
+func _set_focused(value: bool) -> void:
+	if value == focused:
+		return
+	focused = value
+	_set_muted(not value)
+	if value:
+		resume_requested.emit("focus_gained")
+	else:
+		pause_requested.emit("focus_lost")
 
 
 func _set_touch_mode(value: bool) -> void:

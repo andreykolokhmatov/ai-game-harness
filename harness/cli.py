@@ -40,9 +40,10 @@ def _verify_fn(cfg: Config, only: list[str] | None = None):
     if godot_bin is None:
         return None, "Godot binary not found; run `harness doctor`"
     runner = godot.GodotRunner(godot_bin)
-    mode = str((cfg.raw.get("verify") or {}).get("screenshots", "auto"))
-    display = find_display() if mode == "auto" else None
-    return (lambda repo, sha, out: run_verify(runner, repo, sha, out, display=display, only=only)), godot_bin
+    verify_cfg = cfg.raw.get("verify") or {}
+    display = find_display() if str(verify_cfg.get("screenshots", "auto")) == "auto" else None
+    web = verify_cfg.get("web", True) is not False
+    return (lambda repo, sha, out: run_verify(runner, repo, sha, out, display=display, only=only, web=web)), godot_bin
 
 
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
