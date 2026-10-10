@@ -30,6 +30,10 @@ window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
+[internationalization]
+
+locale/translations=PackedStringArray("res://locale/strings.en.translation", "res://locale/strings.ru.translation")
+
 [rendering]
 
 renderer/rendering_method="gl_compatibility"

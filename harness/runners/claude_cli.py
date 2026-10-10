@@ -184,6 +184,9 @@ def to_result(
     )
 
 
+PID_FILE = "agent.pid"  # in the run directory while the agent process runs
+
+
 def _pump(stream: IO[str], out: queue.Queue) -> None:
     for line in stream:
         out.put(line)
@@ -218,14 +221,22 @@ class ClaudeCliRunner:
                 errors="replace",
                 **proc.new_group_kwargs(),
             )
-            assert child.stdin is not None and child.stdout is not None
-            child.stdin.write(req.prompt)
-            child.stdin.close()
+            # If the Harness dies, the agent's own process group survives it: recovery reads this pid
+            # and stops the orphan before it continues the step (see Pipeline._recover).
+            pid_file = run_dir / PID_FILE
+            pid_file.write_text(str(child.pid), encoding="utf-8")
+            try:
+                assert child.stdin is not None and child.stdout is not None
+                child.stdin.write(req.prompt)
+                child.stdin.close()
 
-            lines: queue.Queue = queue.Queue()
-            threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True).start()
-            timed_out = self._consume(child, lines, transcript, parser, req, start)
-            exit_code = child.wait()
+                lines: queue.Queue = queue.Queue()
+                threading.Thread(target=_pump, args=(child.stdout, lines), daemon=True).start()
+                timed_out = self._consume(child, lines, transcript, parser, req, start)
+                exit_code = child.wait()
+            finally:
+                if child.poll() is not None:
+                    pid_file.unlink(missing_ok=True)
 
         return to_result(
             parser,

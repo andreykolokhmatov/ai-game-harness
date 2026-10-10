@@ -31,3 +31,19 @@ def test_timeout_kills_process_tree(tmp_path):
 def test_missing_executable():
     with pytest.raises(FileNotFoundError):
         proc.run(["definitely-not-a-real-binary-xyz"], timeout_s=5)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell shim")
+def test_render_shim_wraps_display_prefix(tmp_path):
+    import subprocess
+
+    from harness.platform.env import write_render_shim
+
+    fake = tmp_path / "fake_godot.sh"
+    fake.write_text('#!/bin/sh\necho "$@"\n')
+    fake.chmod(0o755)
+    shim = write_render_shim(tmp_path / "bin", "godot-render", fake, ["env", "RENDER=1"])
+    out = subprocess.run([str(shim), "--path", "a b"], capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "--audio-driver Dummy --path a b"
+    headless = write_render_shim(tmp_path / "bin2", "godot-render", fake, None)
+    assert "--headless" in subprocess.run([str(headless)], capture_output=True, text=True).stdout

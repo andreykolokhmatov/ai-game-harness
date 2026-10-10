@@ -24,11 +24,15 @@ INITIAL_STATE: State = {
     "created_at": None,
     "state": None,
     "milestone": None,
-    "phase": None,  # inside a milestone: implement | verify | fix
-    "attempt": 0,  # finished implement/fix steps in the current milestone
+    "phase": None,  # inside a milestone: implement | verify | evaluate | fix | revise
+    "attempt": 0,  # finished plan (in SPEC) or implement/fix/revise steps in the current milestone
+    "plan": None,  # {title, milestones: [ids]} once the Planner's plan is accepted
     "last_verify": None,
-    "verify_fingerprints": [],  # failure fingerprints of consecutive failed verifies
+    "last_eval": None,
+    "last_failure": None,  # {source: verify | eval, sha, digest, report}: what the next fix step gets
+    "verify_fingerprints": [],  # fingerprints of consecutive failed checks (verify or eval) in this milestone
     "paused": None,  # where to return after PAUSED
+    "resume_session": None,  # session the usage limit stopped: the next engineer step continues it
     "review_comment": None,  # last `harness revise` comment
     "open_step": None,
     "last_checkpoint": None,
@@ -60,8 +64,11 @@ def _state_entered(s: State, e: Event) -> None:
         s["attempt"] = 0
         s["verify_fingerprints"] = []
         s["last_verify"] = None
+        s["last_eval"] = None
+        s["last_failure"] = None
     s["phase"] = d.get("phase")
     s["paused"] = None
+    s["resume_session"] = d.get("resume_session")
     if s["state"] != "BLOCKED":
         s["blocked_reason"] = None
 
@@ -73,6 +80,7 @@ def _paused(s: State, e: Event) -> None:
         "phase": s["phase"],
         "reason": e["data"].get("reason"),
         "resets_at": e["data"].get("resets_at"),
+        "session_id": e["data"].get("session_id"),
     }
     s["state"] = "PAUSED"
 
@@ -80,13 +88,24 @@ def _paused(s: State, e: Event) -> None:
 def _verify_finished(s: State, e: Event) -> None:
     d = e["data"]
     s["last_verify"] = {"sha": d["sha"], "passed": d["passed"], "report": d.get("report"), "digest": d.get("digest")}
+    if not d["passed"]:
+        s["last_failure"] = {"source": "verify", **s["last_verify"]}
+        s["verify_fingerprints"] = [*s["verify_fingerprints"], d.get("fingerprint")]
+
+
+def _eval_finished(s: State, e: Event) -> None:
+    d = e["data"]
+    s["last_eval"] = {"sha": d["sha"], "passed": d["passed"], "report": d.get("report"), "digest": d.get("digest"),
+                      "summary": d.get("summary")}
     if d["passed"]:
         s["verify_fingerprints"] = []
     else:
+        s["last_failure"] = {"source": "eval", **s["last_eval"]}
         s["verify_fingerprints"] = [*s["verify_fingerprints"], d.get("fingerprint")]
 
 
 def _step_started(s: State, e: Event) -> None:
+    s["resume_session"] = None
     s["open_step"] = {
         "step_id": e["step_id"],
         "kind": e["data"].get("kind"),
@@ -94,6 +113,7 @@ def _step_started(s: State, e: Event) -> None:
         "start_commit": e["data"].get("start_commit"),
         "session_id": None,
         "interruptions": e["data"].get("interruptions", 0),
+        "tier": e["data"].get("tier", 0),
     }
 
 
@@ -101,7 +121,7 @@ def _step_finished(s: State, e: Event) -> None:
     s["open_step"] = None
     s["counters"]["steps_finished"] += 1
     # Only steps that really ran to an end count as attempts.
-    if e["data"].get("kind") in ("implement", "fix", "revise") and e["data"].get("status") not in NOT_AN_ATTEMPT:
+    if e["data"].get("kind") in ("plan", "implement", "fix", "revise") and e["data"].get("status") not in NOT_AN_ATTEMPT:
         s["attempt"] += 1
 
 
@@ -136,9 +156,13 @@ def _checkpoint_created(s: State, e: Event) -> None:
 
 
 def _rollback(s: State, e: Event) -> None:
+    """The repo went back to a checkpoint: work counters of the milestone start over.
+    The STATE_ENTERED that follows sets the state to continue from."""
     s["open_step"] = None
-    s["state"] = e["data"].get("state", s["state"])
-    s["milestone"] = e["data"].get("milestone", s["milestone"])
+    s["attempt"] = 0
+    s["verify_fingerprints"] = []
+    s["last_verify"] = s["last_eval"] = s["last_failure"] = None
+    s["last_checkpoint"] = {"tag": e["data"]["to"], "commit": e["data"]["commit"]}
 
 
 def _human_decision(s: State, e: Event) -> None:
@@ -146,6 +170,11 @@ def _human_decision(s: State, e: Event) -> None:
         s["review_comment"] = e["data"].get("comment")
         s["attempt"] = 0  # a new round of work with its own fix budget
         s["verify_fingerprints"] = []
+        s["last_failure"] = None
+
+
+def _plan_accepted(s: State, e: Event) -> None:
+    s["plan"] = {"title": e["data"].get("title"), "milestones": list(e["data"].get("milestones") or [])}
 
 
 def _blocked(s: State, e: Event) -> None:
@@ -166,6 +195,8 @@ REDUCERS: dict[str, Callable[[State, Event], None]] = {
     "PAUSED": _paused,
     "HUMAN_DECISION": _human_decision,
     "VERIFY_FINISHED": _verify_finished,
+    "PLAN_ACCEPTED": _plan_accepted,
+    "EVAL_FINISHED": _eval_finished,
 }
 
 

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from harness.config import GodotConfig
 from harness.platform import proc
+from harness.platform.env import user_data_env
 
 _VERSION_LINE = re.compile(r"^\d+\.\d+(\.\d+)*\.[a-z]")
 BIN_NAMES = ("godot", "godot4")
@@ -120,13 +122,19 @@ class GodotRunner:
         timeout_s: float,
         headless: bool = True,
         display_prefix: list[str] | None = None,
+        fresh_user_data: bool = False,
     ) -> GodotRun:
         """headless=False renders through display_prefix (e.g. xvfb-run) with dummy audio:
-        without it Godot logs ALSA errors on machines that have no sound card."""
+        without it Godot logs ALSA errors on machines that have no sound card.
+        fresh_user_data: an empty user:// for this run, so saves of earlier runs cannot leak in."""
         mode = ["--headless"] if headless else ["--audio-driver", "Dummy"]
         prefix = [] if headless else list(display_prefix or [])
         full = [*prefix, str(self.bin_path), *mode, "--path", str(project), *args]
-        result = proc.run(full, timeout_s=timeout_s, cwd=project)
+        if fresh_user_data:
+            with tempfile.TemporaryDirectory(prefix="harness_userdata_") as data:
+                result = proc.run(full, timeout_s=timeout_s, cwd=project, env=user_data_env(Path(data)))
+        else:
+            result = proc.run(full, timeout_s=timeout_s, cwd=project)
         output = result.stdout + result.stderr
         errors, warnings = parse_log(output)
         return GodotRun(full, result.returncode, result.timed_out, result.duration_s, output, errors, warnings)
@@ -140,4 +148,5 @@ class GodotRunner:
 
     def smoke(self, project: Path, frames: int = 120, timeout_s: float = 60) -> GodotRun:
         """Start the main scene, run `frames` frames, quit."""
-        return self.run(project, ["--fixed-fps", "60", "--quit-after", str(frames)], timeout_s=timeout_s)
+        return self.run(project, ["--fixed-fps", "60", "--quit-after", str(frames)], timeout_s=timeout_s,
+                        fresh_user_data=True)

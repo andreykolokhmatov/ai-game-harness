@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from harness import __version__
 from harness.config import Config, ConfigError, load_config
@@ -48,7 +49,7 @@ def _verify_fn(cfg: Config, only: list[str] | None = None):
 
 def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     from harness.doctor import check_sandbox
-    from harness.orchestrator.pipeline import Pipeline
+    from harness.orchestrator.pipeline import Pipeline, utc_from_epoch
     from harness.runners.claude_cli import ClaudeCliRunner
 
     project = open_project(cfg, args.project)
@@ -60,8 +61,18 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     if verify is None:
         print(godot_bin, file=sys.stderr)
         return 2
-    pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=verify, godot_bin=godot_bin)
-    state = pipeline.run()
+    pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=verify, godot_bin=godot_bin,
+                        ignore_pause_until=args.now)
+    wait = args.wait or str((cfg.raw.get("usage_limit") or {}).get("on_hit", "pause")) == "wait"
+    while True:
+        state = pipeline.run()
+        resets_at = (state.get("paused") or {}).get("resets_at") if state["state"] == "PAUSED" else None
+        if not (wait and resets_at):
+            break
+        delay = max(30.0, float(resets_at) - time.time() + 60)  # a minute after the reset, to be safe
+        print(f"paused ({state['paused'].get('reason')}); waiting {delay / 60:.0f} min until "
+              f"{utc_from_epoch(float(resets_at) + 60)}", flush=True)
+        time.sleep(delay)
     print_status(project.name, state)
     return 0 if state["state"] in ("HUMAN_REVIEW", "DONE") else 1
 
@@ -83,6 +94,54 @@ def cmd_test(args: argparse.Namespace, cfg: Config) -> int:
     return 0 if report.passed else 1
 
 
+def cmd_approve(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import approve
+
+    project = open_project(cfg, args.project)
+    nxt = approve(project)
+    print(f"approved; next: {nxt}" + ("" if nxt == "DONE" else f" (harness run {project.name})"))
+    return 0
+
+
+def cmd_rollback(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import rollback
+
+    project = open_project(cfg, args.project)
+    gate = bool((cfg.raw.get("gates") or {}).get("human_review_after_prototype", True))
+    target = rollback(project, args.to, gate_after_m1=gate)
+    print(f"rolled back to {args.to}; state {target}; next: harness run {project.name}")
+    return 0
+
+
+def cmd_release(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import Pipeline
+    from harness.platform.display import find_display
+    from harness.runners.claude_cli import ClaudeCliRunner
+    from harness.verify import godot
+
+    project = open_project(cfg, args.project)
+    godot_bin = godot.resolve_bin(cfg.godot)
+    if godot_bin is None:
+        print("Godot binary not found; run `harness doctor`", file=sys.stderr)
+        return 2
+    pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=None, godot_bin=godot_bin)
+    verdict, out = pipeline.release(godot.GodotRunner(godot_bin), find_display())
+    gate = json.loads((out / "final_gate.json").read_text(encoding="utf-8"))
+    for check in gate["checks"]:
+        print(f"{check['status'].upper():<7} {check['id']:<13} {check['detail']}")
+    print(f"\n{verdict}  {gate['sha'][:12]}\nrelease: {out}")
+    return 0 if verdict == "READY" else 1
+
+
+def cmd_stop(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import stop
+
+    project = open_project(cfg, args.project)
+    stop(project, args.reason or "")
+    print(f"{project.name} stopped")
+    return 0
+
+
 def cmd_revise(args: argparse.Namespace, cfg: Config) -> int:
     from harness.orchestrator.pipeline import request_revision
 
@@ -102,6 +161,8 @@ def print_status(name: str, st: dict) -> None:
         f"state       {st['state']}" + (f" ({st['milestone']}, phase {st['phase']})" if st.get("milestone") else ""),
         f"attempt     {st['attempt']}",
     ]
+    if st.get("plan"):
+        lines.append(f"plan        {st['plan']['title']} ({', '.join(st['plan']['milestones'])})")
     if st.get("blocked_reason"):
         lines.append(f"blocked     {st['blocked_reason']}")
     if st.get("paused"):
@@ -112,6 +173,9 @@ def print_status(name: str, st: dict) -> None:
     if st.get("last_verify"):
         v = st["last_verify"]
         lines.append(f"verify      {'PASS' if v['passed'] else 'FAIL'} on {v['sha'][:12]} ({v['report']})")
+    if st.get("last_eval"):
+        ev = st["last_eval"]
+        lines.append(f"evaluator   {'PASS' if ev['passed'] else 'FAIL'} on {ev['sha'][:12]}: {(ev.get('summary') or '')[:160]}")
     if st.get("last_checkpoint"):
         lines.append(f"checkpoint  {st['last_checkpoint']['tag']} {st['last_checkpoint']['commit'][:12]}")
     lines.append(
@@ -175,12 +239,32 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (("run", "run or continue the pipeline"), ("resume", "alias for run")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("project")
+        p.add_argument("--wait", action="store_true", help="on a usage-limit pause, wait for the reset and continue")
+        p.add_argument("--now", action="store_true", help="continue a paused project now, before its recorded reset time")
         p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("test", help="run only the checks (no agents) on the current game commit")
     p.add_argument("project")
     p.add_argument("--scenario", action="append", help="scenario id or file name; repeat for several")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("release", help="build the web package and metadata for HEAD and run the Final gate")
+    p.add_argument("project")
+    p.set_defaults(func=cmd_release)
+
+    p = sub.add_parser("stop", help="end the project at HUMAN_REVIEW, BLOCKED or PAUSED")
+    p.add_argument("project")
+    p.add_argument("reason", nargs="?")
+    p.set_defaults(func=cmd_stop)
+
+    p = sub.add_parser("rollback", help="return the game to a checkpoint tag (cp/plan, cp/prototype, cp/m2, ...)")
+    p.add_argument("project")
+    p.add_argument("--to", required=True, help="checkpoint tag")
+    p.set_defaults(func=cmd_rollback)
+
+    p = sub.add_parser("approve", help="at HUMAN_REVIEW: accept the prototype and continue with the next milestone")
+    p.add_argument("project")
+    p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("revise", help="at HUMAN_REVIEW: send the game back to the engineer with a comment")
     p.add_argument("project")

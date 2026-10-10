@@ -10,4 +10,4 @@ offset_left = 40.0
 offset_top = 40.0
 offset_right = 640.0
 offset_bottom = 80.0
-text = "Template: replace this scene with the game."
+text = "TEMPLATE_HINT"
