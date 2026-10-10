@@ -26,6 +26,7 @@ Godot often exits with code 0 even after errors. Treat any line starting with `E
 - Layout: base resolution 1280x720, stretch mode `canvas_items`, aspect `expand`. UI must stay inside the screen at 16:9, 9:16 and 4:3 (use anchors and containers).
 - `.tscn` files are text: keep `ext_resource` ids and `load_steps` consistent. When a scene is complex, build nodes from code in `_ready()` instead of writing long `.tscn` files by hand.
 - Commit the `.uid` files Godot creates next to scripts and resources. Never commit `.godot/`.
+- Every image, sound, model or font file you add goes into `docs/ASSETS.md` (file, source, license); the Harness fails the check for unlisted files. Files you write yourself (SVG, generated WAV) use the license `original`.
 - Graphics without external assets: shapes from `_draw()`, `Polygon2D`, `ColorRect`, `StyleBoxFlat`, or SVG files you write yourself. Give every placeholder its final size in pixels.
 
 ## Game Contract and test scenarios
