@@ -173,6 +173,9 @@ def print_status(name: str, st: dict) -> None:
     if st.get("last_verify"):
         v = st["last_verify"]
         lines.append(f"verify      {'PASS' if v['passed'] else 'FAIL'} on {v['sha'][:12]} ({v['report']})")
+    if st.get("last_eval"):
+        ev = st["last_eval"]
+        lines.append(f"evaluator   {'PASS' if ev['passed'] else 'FAIL'} on {ev['sha'][:12]}: {(ev.get('summary') or '')[:160]}")
     if st.get("last_checkpoint"):
         lines.append(f"checkpoint  {st['last_checkpoint']['tag']} {st['last_checkpoint']['commit'][:12]}")
     lines.append(
