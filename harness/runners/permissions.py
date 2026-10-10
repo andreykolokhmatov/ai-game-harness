@@ -58,6 +58,7 @@ POLICIES: dict[str, RolePolicy] = {
     "engineer": RolePolicy(tools=[*_FILE_TOOLS, "Bash"], allow=[*_FILE_TOOLS, *_ENGINEER_BASH]),
     "debugger": RolePolicy(tools=[*_FILE_TOOLS, "Bash"], allow=[*_FILE_TOOLS, *_ENGINEER_BASH]),
     "planner": RolePolicy(tools=["Read", "Glob", "Grep"], allow=["Read", "Glob", "Grep"]),
+    "release_writer": RolePolicy(tools=["Read", "Glob", "Grep"], allow=["Read", "Glob", "Grep"]),
     # cwd is harness/eval/<sha>: writes only to its scenarios/, never to the game copy or the report.
     "evaluator": RolePolicy(
         tools=[*_FILE_TOOLS, "Bash"],

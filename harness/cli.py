@@ -113,6 +113,26 @@ def cmd_rollback(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def cmd_release(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import Pipeline
+    from harness.platform.display import find_display
+    from harness.runners.claude_cli import ClaudeCliRunner
+    from harness.verify import godot
+
+    project = open_project(cfg, args.project)
+    godot_bin = godot.resolve_bin(cfg.godot)
+    if godot_bin is None:
+        print("Godot binary not found; run `harness doctor`", file=sys.stderr)
+        return 2
+    pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=None, godot_bin=godot_bin)
+    verdict, out = pipeline.release(godot.GodotRunner(godot_bin), find_display())
+    gate = json.loads((out / "final_gate.json").read_text(encoding="utf-8"))
+    for check in gate["checks"]:
+        print(f"{check['status'].upper():<7} {check['id']:<13} {check['detail']}")
+    print(f"\n{verdict}  {gate['sha'][:12]}\nrelease: {out}")
+    return 0 if verdict == "READY" else 1
+
+
 def cmd_stop(args: argparse.Namespace, cfg: Config) -> int:
     from harness.orchestrator.pipeline import stop
 
@@ -224,6 +244,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("--scenario", action="append", help="scenario id or file name; repeat for several")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("release", help="build the web package and metadata for HEAD and run the Final gate")
+    p.add_argument("project")
+    p.set_defaults(func=cmd_release)
 
     p = sub.add_parser("stop", help="end the project at HUMAN_REVIEW, BLOCKED or PAUSED")
     p.add_argument("project")

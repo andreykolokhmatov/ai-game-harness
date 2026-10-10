@@ -6,6 +6,7 @@ the event log, including a step that was interrupted by a crash or kill.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import time
@@ -16,7 +17,7 @@ from typing import Any, Callable
 
 from harness.config import Config
 from harness.orchestrator import escalation, evaluator, planner
-from harness.platform.display import find_display
+from harness.platform.display import Display, find_display
 from harness.platform.env import agent_env, write_render_shim, write_shim
 from harness.project import Project
 from harness.prompts.builder import render, write_system_prompt
@@ -27,11 +28,11 @@ from harness.runners.permissions import policy_for, sandbox_settings
 from harness.state.lock import ProjectLock
 from harness.state.projection import State
 from harness.verify.report import VerifyReport, failure_digest
-from harness.verify.godot import CHECK_SCRIPTS_GD, SCENARIO_RUNNER_GD
+from harness.verify.godot import CHECK_SCRIPTS_GD, SCENARIO_RUNNER_GD, GodotRunner
 
 VerifyFn = Callable[[Path, str, Path], VerifyReport]  # (project dir, sha, report dir) -> report
 
-STOP_STATES = {"HUMAN_REVIEW", "BLOCKED", "DONE", "FAILED", "STOPPED"}
+STOP_STATES = {"HUMAN_REVIEW", "BLOCKED", "DONE", "READY", "FAILED", "STOPPED"}
 MAX_INTERRUPTIONS = 2
 MAX_INFRA_RETRIES = 3
 INFRA_PAUSE_S = 600
@@ -571,6 +572,42 @@ class Pipeline:
             self.block(f"checks still failing after {self.max_fix_attempts} fix attempts")
         else:
             self.enter("MILESTONE", milestone=st["milestone"], phase="fix")
+
+    # ---- release (stage 8) --------------------------------------------
+
+    def release(self, godot: GodotRunner, display: Display | None) -> tuple[str, Path]:
+        """Build the web package, images and metadata for HEAD and run the Final gate.
+        Returns the verdict (READY or FAILED) and the release directory."""
+        from harness import release as rel
+
+        with ProjectLock(self.project.lock_path):
+            st = self.state()
+            facts = rel.build(self.project, godot, display)
+            out, head = facts["out"], facts["head"]
+            report = (st["last_verify"] or {}).get("report")
+            shots = rel.copy_screenshots(self.project.harness_dir / report, out) if report else []
+            title = (st["plan"] or {}).get("title") or st["idea"]
+            step_id = f"release.{head[:12]}"
+            result = self._run_agent("release_writer", render("tasks/release", title=title), step_id, None,
+                                     json_schema=rel.METADATA_SCHEMA, add_dirs=[])
+            meta = result.structured_output if result.status == "ok" else None
+            if meta is not None:
+                (out / "metadata.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                (out / "METADATA.md").write_text(rel.metadata_md(meta), encoding="utf-8")
+            checks = rel.final_gate(st, head, use_evaluator=self.use_evaluator, unpacked=facts["unpacked"],
+                                    zip_path=facts["zip"], images=facts["images"], screenshots=shots, meta=meta)
+            verdict = "FAILED" if any(c.status == "fail" for c in checks) else "READY"
+            rel.write_gate(out, verdict, checks, head)
+            rel_dir = str(out.relative_to(self.project.harness_dir))
+            self.emit("RELEASE_BUILT", {"sha": head, "dir": rel_dir, "zip": facts["zip"].name,
+                                        "unpacked_bytes": facts["unpacked"], "export": facts["export"].status})
+            self.emit("FINAL_GATE", {"sha": head, "verdict": verdict, "dir": rel_dir,
+                                     "failed": [c.id for c in checks if c.status == "fail"]})
+            if verdict == "READY":
+                self.project.repo().tag("cp/release-candidate", head)
+                self.emit("CHECKPOINT_CREATED", {"tag": "cp/release-candidate", "commit": head})
+                self.enter("READY", milestone=st["milestone"])
+            return verdict, out
 
 
 def next_milestone(st: State) -> str | None:
