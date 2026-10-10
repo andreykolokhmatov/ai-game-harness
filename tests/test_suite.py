@@ -26,7 +26,7 @@ def test_template_passes_headless(tmp_path):
     assert report.passed, (tmp_path / "report" / "report.md").read_text()
     assert statuses(report) == {
         "structure": "pass", "import": "pass", "scripts": "pass", "smoke": "pass",
-        "screens": "skipped", "contract": "pass", "assets": "pass", "scenarios": "pass", "scenario:smoke": "pass",
+        "screens": "skipped", "contract": "pass", "assets": "pass", "locale": "pass", "scenarios": "pass", "scenario:smoke": "pass",
     }
     data = json.loads((tmp_path / "report" / "verify.json").read_text())
     assert data["passed"] and data["display"] is None
@@ -56,7 +56,7 @@ def test_broken_scripts_skip_runtime_checks(tmp_path):
     report = run_verify(GodotRunner(godot_bin()), repo, "sha", tmp_path / "report", display=None)
     st = statuses(report)
     assert st["scripts"] == "fail"
-    assert st["screens"] == st["contract"] == st["assets"] == st["scenarios"] == "skipped"
+    assert st["screens"] == st["contract"] == st["assets"] == st["locale"] == st["scenarios"] == "skipped"
 
 
 @needs_godot

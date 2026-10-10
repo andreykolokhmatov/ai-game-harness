@@ -32,6 +32,7 @@ func _publish() -> void:
 		"ready": _frames >= READY_AFTER_FRAMES,
 		"frames": _frames,
 		"muted": AudioServer.is_bus_mute(AudioServer.get_bus_index("Master")),
+		"locale": TranslationServer.get_locale(),
 	}
 	var platform: Node = get_node_or_null("/root/Platform")
 	if platform != null:

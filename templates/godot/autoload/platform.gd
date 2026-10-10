@@ -21,6 +21,8 @@ var _js_callbacks: Array[JavaScriptObject] = []
 
 func _ready() -> void:
 	touch_mode = DisplayServer.is_touchscreen_available()
+	# UI text comes from locale/strings.csv through tr(); the browser or OS language picks the column.
+	TranslationServer.set_locale(language())
 	if OS.has_feature("web"):
 		_listen_to_page()
 

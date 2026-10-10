@@ -3,7 +3,7 @@
 Order and gates:
   structure -> import (hard gate) -> scripts -> smoke
   -> screens (built-in smoke scenario per viewport; gives the game_state() snapshot)
-  -> contract -> assets (docs/ASSETS.md) -> scenarios (one check per tests/scenarios/*.json)
+  -> contract -> assets (docs/ASSETS.md) -> locale (en, ru) -> scenarios (one check per tests/scenarios/*.json)
   -> web_export -> web_desktop, web_mobile, web_focus (when web=True, see harness.verify.web)
 Runtime checks after `scripts` are skipped when scripts do not compile: every scenario
 would fail with the same compile errors.
@@ -18,6 +18,7 @@ from harness.platform.display import Display
 from harness.state.snapshot import write_json_atomic
 from harness.verify.assets import check_assets
 from harness.verify.basic import _from_run, check_structure
+from harness.verify.locale import check_locale
 from harness.verify.contract import check_contract
 from harness.verify.godot import GodotRunner
 from harness.verify.markdown import write_markdown
@@ -111,7 +112,7 @@ def run_verify(
     out_dir.mkdir(parents=True, exist_ok=True)
     checks = [check_structure(repo)]
     shots: list[dict] = []
-    later = ("screens", "contract", "assets", "scenarios", *(WEB_CHECKS if web else ()))
+    later = ("screens", "contract", "assets", "locale", "scenarios", *(WEB_CHECKS if web else ()))
     if checks[0].status != "pass":
         checks += [_skipped(c, "structure failed") for c in ("import", "scripts", "smoke", *later)]
         return _finish(sha, checks, shots, display, out_dir)
@@ -133,6 +134,7 @@ def run_verify(
     checks.append(screens)
     checks.append(check_contract(repo, state))
     checks.append(check_assets(repo))
+    checks.append(check_locale(repo))
 
     scenario_files = discover(repo)
     if only:
