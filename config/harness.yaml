@@ -12,6 +12,7 @@ claude:
 
 verify:
   screenshots: auto                 # auto: render with Xvfb/window when available | off: headless only
+  web: true                         # Web export + Chromium checks (skipped without Playwright)
 
 sandbox: true                        # Bash sandbox for agents (Linux/macOS; ignored on Windows)
 

@@ -27,3 +27,12 @@ needs_display = pytest.mark.skipif(not find_display().available, reason="no disp
 def copy_game(source: Path, target: Path) -> Path:
     shutil.copytree(source, target, ignore=shutil.ignore_patterns(".godot", "*.uid"))
     return target
+
+
+def _web_ready() -> bool:
+    from harness.doctor import check_playwright
+
+    return check_playwright().status == "ok"
+
+
+needs_web = pytest.mark.skipif(not _web_ready(), reason="Playwright with Chromium not available")

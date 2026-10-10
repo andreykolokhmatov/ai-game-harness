@@ -179,8 +179,20 @@ def check_ffmpeg() -> Check:
 
 def check_playwright() -> Check:
     if importlib.util.find_spec("playwright") is None:
-        return Check("playwright", "warn", "not installed (needed from stage 4: web checks)")
-    return Check("playwright", "ok", "python package installed")
+        return Check("playwright", "warn", "not installed: web checks are skipped", "uv sync --extra web")
+    from playwright.sync_api import Error, sync_playwright
+
+    from harness.verify.web import CHROMIUM_ARGS
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(args=CHROMIUM_ARGS)
+            version = browser.version
+            browser.close()
+    except Error as exc:
+        return Check("playwright", "warn", f"Chromium does not start: {str(exc).splitlines()[0]}",
+                     "playwright install chromium")
+    return Check("playwright", "ok", f"Chromium {version}")
 
 
 def check_workspace(cfg: Config) -> Check:
