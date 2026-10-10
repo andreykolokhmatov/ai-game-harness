@@ -33,6 +33,7 @@ COMMON_DENY = [
 _FILE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"]
 _ENGINEER_BASH = [
     "Bash(godot *)",
+    "Bash(godot-render *)",
     "Bash(git status *)",
     "Bash(git status)",
     "Bash(git diff *)",
@@ -60,7 +61,8 @@ POLICIES: dict[str, RolePolicy] = {
     # cwd is harness/eval/<sha>: writes only to its scenarios/, never to the game copy or the report.
     "evaluator": RolePolicy(
         tools=[*_FILE_TOOLS, "Bash"],
-        allow=["Read", "Glob", "Grep", "Write(./scenarios/**)", "Edit(./scenarios/**)", "Bash(godot *)"],
+        allow=["Read", "Glob", "Grep", "Write(./scenarios/**)", "Edit(./scenarios/**)", "Bash(godot *)",
+               "Bash(godot-render *)"],
         deny=[*COMMON_DENY, "Write(./game/**)", "Edit(./game/**)", "Write(./report/**)", "Edit(./report/**)"],
     ),
 }

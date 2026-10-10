@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -54,4 +55,23 @@ def write_shim(bin_dir: Path, name: str, target: Path) -> Path:
     if shim.is_symlink() or shim.exists():
         shim.unlink()
     shim.symlink_to(target)
+    return shim
+
+
+def write_render_shim(bin_dir: Path, name: str, godot: Path, display_prefix: list[str] | None) -> Path:
+    """`name` runs Godot with rendering: through the display prefix (xvfb-run on Linux) and dummy
+    audio, so agents get the same GUI behaviour as the Harness checks. display_prefix=None: no
+    display on this machine, the shim falls back to headless."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        shim = bin_dir / f"{name}.cmd"
+        shim.write_text(f'@echo off\r\n"{godot}" --audio-driver Dummy %*\r\n', encoding="utf-8")
+        return shim
+    mode = ["--audio-driver", "Dummy"] if display_prefix is not None else ["--headless"]
+    cmd = " ".join(shlex.quote(part) for part in [*(display_prefix or []), str(godot), *mode])
+    shim = bin_dir / name
+    if shim.is_symlink():
+        shim.unlink()
+    shim.write_text(f'#!/bin/sh\nexec {cmd} "$@"\n', encoding="utf-8")
+    shim.chmod(0o755)
     return shim

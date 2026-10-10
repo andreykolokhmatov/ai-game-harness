@@ -16,7 +16,8 @@ from typing import Any, Callable
 
 from harness.config import Config
 from harness.orchestrator import escalation, evaluator, planner
-from harness.platform.env import agent_env, write_shim
+from harness.platform.display import find_display
+from harness.platform.env import agent_env, write_render_shim, write_shim
 from harness.project import Project
 from harness.prompts.builder import render, write_system_prompt
 from harness.runners.base import AgentRequest, AgentResult, AgentRunner
@@ -411,6 +412,9 @@ class Pipeline:
         self.project.scratch_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "prompt.md").write_text(prompt, encoding="utf-8")
         shim = write_shim(self.project.bin_dir, "godot", self.godot_bin)
+        display = find_display()
+        write_render_shim(self.project.bin_dir, "godot-render", self.godot_bin,
+                          display.prefix if display.available else None)
         aliases = self.cfg.models_raw.get("models") or {}
         fallbacks = [aliases[a] for a in self.cfg.models_raw.get("fallback") or [] if aliases.get(a) != model_id]
         settings: dict[str, Any] = {"permissions": {"allow": [], "deny": []}}
