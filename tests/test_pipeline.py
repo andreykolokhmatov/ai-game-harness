@@ -462,3 +462,15 @@ def test_run_now_tries_before_the_recorded_reset(cfg):
     st = Pipeline(cfg, project, free, verify_requires("game.gd"), godot_bin=Path(sys.executable), clock=clock,
                   ignore_pause_until=True).run()
     assert st["state"] == "HUMAN_REVIEW"
+
+
+def test_stop_at_human_review(cfg):
+    from harness.orchestrator.pipeline import stop
+
+    project, pipeline = make(cfg, MockRunner([MockResponse(files={"game.gd": "x"})]), verify_requires("game.gd"))
+    with pytest.raises(PipelineError, match="stop is possible"):
+        stop(project)
+    pipeline.run()
+    stop(project, "not fun")
+    assert project.state()["state"] == "STOPPED"
+    assert pipeline.run()["state"] == "STOPPED"

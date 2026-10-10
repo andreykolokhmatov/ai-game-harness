@@ -113,6 +113,15 @@ def cmd_rollback(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def cmd_stop(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import stop
+
+    project = open_project(cfg, args.project)
+    stop(project, args.reason or "")
+    print(f"{project.name} stopped")
+    return 0
+
+
 def cmd_revise(args: argparse.Namespace, cfg: Config) -> int:
     from harness.orchestrator.pipeline import request_revision
 
@@ -215,6 +224,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("--scenario", action="append", help="scenario id or file name; repeat for several")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("stop", help="end the project at HUMAN_REVIEW, BLOCKED or PAUSED")
+    p.add_argument("project")
+    p.add_argument("reason", nargs="?")
+    p.set_defaults(func=cmd_stop)
 
     p = sub.add_parser("rollback", help="return the game to a checkpoint tag (cp/plan, cp/prototype, cp/m2, ...)")
     p.add_argument("project")

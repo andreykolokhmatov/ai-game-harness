@@ -30,7 +30,7 @@ from harness.verify.godot import CHECK_SCRIPTS_GD, SCENARIO_RUNNER_GD
 
 VerifyFn = Callable[[Path, str, Path], VerifyReport]  # (project dir, sha, report dir) -> report
 
-STOP_STATES = {"HUMAN_REVIEW", "BLOCKED", "DONE", "FAILED"}
+STOP_STATES = {"HUMAN_REVIEW", "BLOCKED", "DONE", "FAILED", "STOPPED"}
 MAX_INTERRUPTIONS = 2
 MAX_INFRA_RETRIES = 3
 INFRA_PAUSE_S = 600
@@ -654,6 +654,17 @@ def rollback(project: Project, tag: str, gate_after_m1: bool = True) -> str:
                    project=project.name)
         log.append("STATE_ENTERED", target, project=project.name)
         return target["state"] + (f" {target['milestone']}" if target.get("milestone") else "")
+
+
+def stop(project: Project, reason: str = "") -> None:
+    """The human ends the project (STOPPED, terminal). A rollback can still bring it back."""
+    with ProjectLock(project.lock_path):
+        st = project.state()
+        if st["state"] not in ("HUMAN_REVIEW", "BLOCKED", "PAUSED"):
+            raise PipelineError(f"stop is possible at HUMAN_REVIEW, BLOCKED or PAUSED, the project is in {st['state']}")
+        log = project.log()
+        log.append("HUMAN_DECISION", {"decision": "stop", "reason": reason}, project=project.name)
+        log.append("STATE_ENTERED", {"state": "STOPPED", "milestone": st["milestone"]}, project=project.name)
 
 
 def utc_from_epoch(ts: float | None) -> str | None:
