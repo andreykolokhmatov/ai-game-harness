@@ -5,8 +5,8 @@ repository with the Harness probe (gdscript/web_probe.gd) added as the last auto
 publishes `window.harnessState`; the browser checks read it:
   web_export   the copy exports with the "Web" preset
   web_desktop  1280x720: loads, no console errors, screenshot
-  web_mobile   phone emulation with touch: loads, a tap switches Platform to touch mode,
-               portrait and landscape screenshots, no console errors
+  web_mobile   phone emulation with touch and a ru-RU browser: loads, a tap switches Platform to
+               touch mode, the game picks Russian, portrait and landscape screenshots, no console errors
   web_focus    hiding the page mutes audio, showing it again unmutes
 The single-threaded export needs no COOP/COEP headers, so a plain static server is enough.
 """
@@ -147,9 +147,10 @@ class _Page:
 
 
 def _open(browser: Any, url: str, *, viewport: tuple[int, int], mobile: bool) -> _Page:
-    options: dict[str, Any] = {"viewport": {"width": viewport[0], "height": viewport[1]}}
+    # The phone is Russian, the desktop English: both languages show up in the screenshots.
+    options: dict[str, Any] = {"viewport": {"width": viewport[0], "height": viewport[1]}, "locale": "en-US"}
     if mobile:
-        options.update(is_mobile=True, has_touch=True, device_scale_factor=2)
+        options.update(is_mobile=True, has_touch=True, device_scale_factor=2, locale="ru-RU")
     page = browser.new_context(**options).new_page()
     wrapped = _Page(page)
 
@@ -208,9 +209,13 @@ def check_mobile(browser: Any, url: str, out_dir: Path, shots: list[dict]) -> Ch
     problems: list[dict] = []
     page.page.touchscreen.tap(PHONE[0] // 2, PHONE[1] // 2)
     page.page.wait_for_timeout(500)
-    platform = page.state().get("platform")
+    state = page.state()
+    platform = state.get("platform")
     if platform is not None and not platform.get("touch_mode"):
         problems.append({"message": "Platform.touch_mode is false after a tap: touch controls will not show", "at": None})
+    if platform is not None and not str(state.get("locale", "")).startswith("ru"):
+        problems.append({"message": f"a ru-RU browser got locale '{state.get('locale')}': the game must follow "
+                                    "Platform.language()", "at": None})
     portrait = page.screenshot(out_dir, "web_mobile_portrait")
     page.page.set_viewport_size({"width": PHONE[1], "height": PHONE[0]})
     page.page.wait_for_timeout(SETTLE_MS)
@@ -239,6 +244,25 @@ def check_focus(page: _Page) -> CheckResult:
     return _result("web_focus", "audio muted while hidden, unmuted on return", problems, started)
 
 
+def export_web(godot: GodotRunner, project: Path, web_dir: Path, log_path: Path) -> CheckResult:
+    """Export `project` with its Web preset into web_dir (index.html and friends)."""
+    web_dir.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    godot.import_project(project)
+    run = godot.run(project, ["--export-release", WEB_PRESET, str(web_dir / "index.html")], timeout_s=300)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(run.output, encoding="utf-8")
+    size_mb = sum(p.stat().st_size for p in web_dir.iterdir()) / 1e6
+    problems = [{"message": e.message, "at": e.location} for e in run.errors]
+    if run.timed_out:
+        problems.insert(0, {"message": "export timed out", "at": None})
+    if not (web_dir / "index.html").is_file():
+        problems.insert(0, {"message": "export produced no index.html", "at": None})
+    result = _result("web_export", f"exported, {size_mb:.1f} MB", problems, started, len(run.warnings))
+    result.log = log_path.name
+    return result
+
+
 def run_web_checks(godot: GodotRunner, repo: Path, out_dir: Path) -> tuple[list[CheckResult], list[dict]]:
     """All web checks; returns the checks and screenshot records (paths relative to out_dir)."""
     ok, reason = playwright_available()
@@ -253,19 +277,7 @@ def run_web_checks(godot: GodotRunner, repo: Path, out_dir: Path) -> tuple[list[
     with tempfile.TemporaryDirectory(prefix="harness_web_") as tmp:
         project = prepare_test_project(repo, Path(tmp) / "game")
         web_dir = Path(tmp) / "web"
-        web_dir.mkdir()
-        started = time.monotonic()
-        godot.import_project(project)
-        run = godot.run(project, ["--export-release", WEB_PRESET, str(web_dir / "index.html")], timeout_s=300)
-        (out_dir / "web_export.log").write_text(run.output, encoding="utf-8")
-        size_mb = sum(p.stat().st_size for p in web_dir.iterdir()) / 1e6
-        problems = [{"message": e.message, "at": e.location} for e in run.errors]
-        if run.timed_out:
-            problems.insert(0, {"message": "export timed out", "at": None})
-        if not (web_dir / "index.html").is_file():
-            problems.insert(0, {"message": "export produced no index.html", "at": None})
-        export = _result("web_export", f"exported, {size_mb:.1f} MB", problems, started, len(run.warnings))
-        export.log = "web_export.log"
+        export = export_web(godot, project, web_dir, out_dir / "web_export.log")
         if export.status == "fail":
             return [export] + [CheckResult(c, "skipped", "skipped: web export failed") for c in CHECK_IDS[1:]], []
 
