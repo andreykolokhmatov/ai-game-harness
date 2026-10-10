@@ -115,6 +115,29 @@ def terminate_tree(proc: subprocess.Popen, grace_s: float = 5.0) -> None:
     proc.wait()
 
 
+def kill_group(pid: int, grace_s: float = 5.0) -> bool:
+    """Stop a process group we do not hold a Popen for (an orphan from a killed Harness).
+    True if something was running."""
+    if not pid_alive(pid):
+        return False
+    if IS_WINDOWS:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        return True
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return False
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline and pid_alive(pid):
+        time.sleep(0.1)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return True
+
+
 def run(
     cmd: Sequence[str],
     *,

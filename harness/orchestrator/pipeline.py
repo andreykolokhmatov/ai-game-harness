@@ -20,7 +20,8 @@ from harness.platform.env import agent_env, write_shim
 from harness.project import Project
 from harness.prompts.builder import render, write_system_prompt
 from harness.runners.base import AgentRequest, AgentResult, AgentRunner
-from harness.runners.claude_cli import write_request_log
+from harness.platform import proc
+from harness.runners.claude_cli import PID_FILE, write_request_log
 from harness.runners.permissions import policy_for, sandbox_settings
 from harness.state.lock import ProjectLock
 from harness.state.projection import State
@@ -245,6 +246,7 @@ class Pipeline:
         if not step:
             return
         interruptions = int(step.get("interruptions") or 0)
+        self._stop_orphan(step)
         self.emit(
             "STEP_FINISHED",
             {"kind": step.get("kind"), "status": "interrupted", "interruptions": interruptions},
@@ -270,6 +272,18 @@ class Pipeline:
             return
         repo.reset_hard(step["start_commit"])
         self._carry_interruptions = interruptions + 1
+
+    def _stop_orphan(self, step: dict[str, Any]) -> None:
+        """An agent from a killed Harness may still be running in its own process group:
+        stop it before anything else touches the repo."""
+        pid_file = self.project.runs_dir / str(step.get("run_id")) / PID_FILE
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return
+        if proc.kill_group(pid):
+            self.emit("ORPHAN_STOPPED", {"pid": pid, "run_id": step.get("run_id")}, step_id=step["step_id"])
+        pid_file.unlink(missing_ok=True)
 
     def _unpause(self, st: State) -> bool:
         paused = st["paused"] or {}
