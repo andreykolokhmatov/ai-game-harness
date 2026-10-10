@@ -63,4 +63,5 @@ Scenarios are JSON files in `tests/scenarios/`, one behaviour each. Write one fo
 - Frames run at a fixed 60 per second. `press` and `hold` use InputMap action names; `key` uses key names (`SPACE`, `LEFT`, `ESCAPE`); `tap` is a touch, `click` a left mouse click, both in viewport pixels.
 - `assert` and `wait_until` are Godot `Expression`s over `state` (the result of `game_state()`): `state.score >= 10`, `state.player.position.x > 100`, `state.items.size() == 3`. Engine singletons are not available in expressions.
 - A scenario fails on a false assert, a `wait_until` timeout, an unknown action or command, or any `ERROR:` line from the engine while it runs.
+- `"locale": "ru"` at the top level plays the scenario in that language (the default comes from the system): use it for the language criterion.
 - Use `seed` (global RNG) when the scenario depends on randomness; use `randf()`/`randi()` in the game rather than a separately seeded RandomNumberGenerator.

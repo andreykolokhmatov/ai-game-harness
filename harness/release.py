@@ -71,10 +71,16 @@ def package(web_dir: Path, zip_path: Path) -> int:
 
 
 def capture_images(godot: GodotRunner, repo: Path, out_dir: Path, display: Display | None) -> dict[str, dict]:
-    """Icon and cover: the start screen rendered at their exact sizes."""
+    """Icon and cover: the start screen rendered at their exact sizes, in English (the default)
+    and the cover in Russian too. The language is fixed, not taken from the build machine."""
     images: dict[str, dict] = {}
-    for name, size in (("icon", ICON), ("cover", COVER)):
-        sr = run_scenario(godot, repo, BUILTIN_SMOKE, out_dir / "_shots", display=display, run_id=f"release_{name}",
+    shots_dir = out_dir / "_shots"
+    shots_dir.mkdir(parents=True, exist_ok=True)
+    for name, size, locale in (("icon", ICON, "en"), ("cover", COVER, "en"), ("cover_ru", COVER, "ru")):
+        scenario = shots_dir / f"{name}.json"
+        smoke = json.loads(BUILTIN_SMOKE.read_text(encoding="utf-8"))
+        scenario.write_text(json.dumps({**smoke, "locale": locale}), encoding="utf-8")
+        sr = run_scenario(godot, repo, scenario, shots_dir, display=display, run_id=f"release_{name}",
                           viewport=size)
         shots = (sr.result or {}).get("screenshots") or []
         if sr.passed and shots:

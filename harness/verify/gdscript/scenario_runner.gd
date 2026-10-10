@@ -82,6 +82,9 @@ func _run_file(path: String) -> void:
 		return
 	seed(int(_scenario.get("seed", 0)))
 	_game = root.get_node_or_null("Game")
+	# "locale": play the scenario in this language (set after Platform picked one, before the scene exists).
+	if _scenario.has("locale"):
+		TranslationServer.set_locale(str(_scenario["locale"]))
 
 	var main_path: String = str(ProjectSettings.get_setting("application/run/main_scene", ""))
 	var packed: PackedScene = load(main_path) as PackedScene if not main_path.is_empty() else null
