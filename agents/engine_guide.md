@@ -8,6 +8,7 @@ Engine: Godot $godot_version, GDScript only (C# cannot export to the web in Godo
 - Run the main scene for 2 seconds: `godot --headless --path . --fixed-fps 60 --quit-after 120`
 - Run all test scenarios: `godot --headless --path . --fixed-fps 60 --script "$scenario_runner" -- --scenario tests/scenarios`
 - Run one scenario: `godot --headless --path . --fixed-fps 60 --script "$scenario_runner" -- --scenario tests/scenarios/<name>.json`
+- The same with rendering, as the Harness runs them (GUI clicks and taps on `Control` nodes, screenshots): replace `godot --headless` with `godot-render`, for example `godot-render --path . --fixed-fps 60 --script "$scenario_runner" -- --scenario tests/scenarios`. Headless runs skip GUI input handling, so a click scenario can pass rendered and fail headless.
 
 Scratch directory for throwaway files (test scripts, notes, experiments): `$scratch`. Do not put temporary files in the game directory.
 
@@ -21,6 +22,7 @@ Godot often exits with code 0 even after errors. Treat any line starting with `E
 - Static typing is required: `untyped_declaration` is an error. Write `var speed: float = 200.0`, `func f(x: int) -> void:`. Avoid `:=` when the right side is a Variant (dictionary access, `get()`, untyped array element): inference fails to compile.
 - Autoloads already present: `Platform` (saves, language, focus/pause signals; always use `Platform.save_data()` / `Platform.load_data()` for progress) and `Game` (game-wide state; keep `game_state()` returning a Dictionary that describes the current game).
 - Call `Platform.loading_ready()` once when the game is playable. Pause gameplay and audio on `Platform.pause_requested`, resume on `Platform.resume_requested`.
+- Languages: every text the player sees is in English and Russian. Put it in `locale/strings.csv` (`keys,en,ru`; already registered in `project.godot`) and show it with `tr("KEY")`, or set the key as a Label/Button text (they translate automatically). `Platform` picks the language at start. Leave room in the layout: Russian text is often 30% longer. The Harness fails the check when a key lacks `en` or `ru` text, and opens the game on a Russian phone.
 - Input: define actions in `project.godot` `[input]` and read them with `Input.is_action_pressed("name")`. Every action must also work by touch (on-screen buttons or gestures) because mobile browsers have no keyboard.
 - On-screen touch controls are visible only in touch mode: show them when `Platform.touch_mode` is true, and update on `Platform.input_mode_changed`. A desktop player with keyboard and mouse must not see them.
 - Layout: base resolution 1280x720, stretch mode `canvas_items`, aspect `expand`. UI must stay inside the screen at 16:9, 9:16 and 4:3 (use anchors and containers).
