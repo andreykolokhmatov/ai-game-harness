@@ -28,7 +28,7 @@ assets:
 
 limits:
   max_tokens_per_milestone: null
-  project_wall_clock_h: 12
+  project_wall_clock_h: 12            # total agent time of a project; usage-limit pauses do not count
   max_milestones: 3                  # the Planner may plan fewer
   fix_attempts_per_milestone: 4
   escalate_after_attempts: 2

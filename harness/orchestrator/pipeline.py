@@ -84,6 +84,8 @@ class Pipeline:
         self.idle_min = limits.get("idle_output_timeout_min")
         self.max_milestones = int(limits.get("max_milestones", 3))
         self.escalate_after = int(limits.get("escalate_after_attempts", 2))
+        hours = limits.get("project_wall_clock_h")
+        self.max_agent_s = float(hours) * 3600 if hours else None
 
     # ---- state helpers -------------------------------------------------
 
@@ -107,6 +109,8 @@ class Pipeline:
             while True:
                 st = self.state()
                 current = st["state"]
+                if current in ("SPEC", "MILESTONE") and self._over_time_limit(st):
+                    continue
                 if current == "CREATED":
                     self.enter("SPEC")
                 elif current == "SPEC":
@@ -120,6 +124,14 @@ class Pipeline:
                     return st
                 else:
                     raise PipelineError(f"no handler for state {current}")
+
+    def _over_time_limit(self, st: State) -> bool:
+        """Agent time of the whole project (pauses for the usage limit do not count)."""
+        spent = st["counters"]["agent_duration_s"]
+        if self.max_agent_s is None or spent < self.max_agent_s:
+            return False
+        self.block(f"limit: {spent / 3600:.1f} h of agent time, project_wall_clock_h is {self.max_agent_s / 3600:g}")
+        return True
 
     def _milestone(self, st: State) -> None:
         phase = st["phase"]
@@ -576,6 +588,43 @@ def approve(project: Project) -> str:
             return f"MILESTONE {nxt}"
         log.append("STATE_ENTERED", {"state": "DONE", "milestone": st["milestone"]}, project=project.name)
         return "DONE"
+
+
+def rollback(project: Project, tag: str, gate_after_m1: bool = True) -> str:
+    """Return the game repo to a checkpoint tag and the pipeline to the state after it.
+
+    cp/created -> CREATED, cp/plan -> m1 implement, a milestone checkpoint -> what follows
+    that milestone (HUMAN_REVIEW after m1 with the gate, the next milestone, or DONE).
+    The event log keeps everything; only the repo is reset.
+    """
+    with ProjectLock(project.lock_path):
+        st = project.state()
+        repo = project.repo()
+        commit = repo.tag_sha(tag)
+        if commit is None:
+            raise PipelineError(f"no checkpoint tag {tag} in {project.repo_dir}")
+        if tag == "cp/created":
+            target: dict[str, Any] = {"state": "CREATED"}
+        elif tag == "cp/plan":
+            target = {"state": "MILESTONE", "milestone": "m1", "phase": "implement"}
+        else:
+            milestone = next((e["data"].get("milestone") for e in reversed(project.log().read())
+                              if e["type"] == "CHECKPOINT_CREATED" and e["data"].get("tag") == tag), None)
+            milestone = milestone or {v: k for k, v in MILESTONE_CHECKPOINTS.items()}.get(tag) or tag.removeprefix("cp/")
+            nxt = next_milestone({**st, "milestone": milestone})
+            if gate_after_m1 and milestone == "m1":
+                target = {"state": "HUMAN_REVIEW", "milestone": milestone}
+            elif nxt:
+                target = {"state": "MILESTONE", "milestone": nxt, "phase": "implement"}
+            else:
+                target = {"state": "DONE", "milestone": milestone}
+        before = repo.head()
+        repo.reset_hard(commit)
+        log = project.log()
+        log.append("ROLLBACK", {"to": tag, "commit": commit, "from_state": st["state"], "from_commit": before},
+                   project=project.name)
+        log.append("STATE_ENTERED", target, project=project.name)
+        return target["state"] + (f" {target['milestone']}" if target.get("milestone") else "")
 
 
 def utc_from_epoch(ts: float | None) -> str | None:

@@ -152,9 +152,13 @@ def _checkpoint_created(s: State, e: Event) -> None:
 
 
 def _rollback(s: State, e: Event) -> None:
+    """The repo went back to a checkpoint: work counters of the milestone start over.
+    The STATE_ENTERED that follows sets the state to continue from."""
     s["open_step"] = None
-    s["state"] = e["data"].get("state", s["state"])
-    s["milestone"] = e["data"].get("milestone", s["milestone"])
+    s["attempt"] = 0
+    s["verify_fingerprints"] = []
+    s["last_verify"] = s["last_eval"] = s["last_failure"] = None
+    s["last_checkpoint"] = {"tag": e["data"]["to"], "commit": e["data"]["commit"]}
 
 
 def _human_decision(s: State, e: Event) -> None:

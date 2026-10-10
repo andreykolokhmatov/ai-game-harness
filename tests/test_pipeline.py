@@ -379,3 +379,54 @@ def test_fix_steps_escalate_to_the_debugger(cfg):
     assert "Failure history" in reqs[3].prompt and "failure kind b" in reqs[3].prompt
     escalated = [e["data"]["tier"] for e in project.log().read() if e["type"] == "ESCALATED"]
     assert escalated == [1, 2, 2]
+
+
+def test_rollback_to_prototype_after_m2_work(cfg):
+    from harness.orchestrator.pipeline import approve, rollback
+
+    runner = MockRunner([MockResponse(files={"game.gd": "v1"}), MockResponse(files={"game.gd": "v2", "extra.gd": "x"})])
+    project, pipeline = make(cfg, runner, verify_requires("game.gd"))
+    pipeline.run()
+    approve(project)
+    assert pipeline.run()["state"] == "DONE"
+    assert rollback(project, "cp/prototype") == "HUMAN_REVIEW m1"
+    st = project.state()
+    assert st["state"] == "HUMAN_REVIEW" and st["milestone"] == "m1" and st["attempt"] == 0
+    assert (project.repo_dir / "game.gd").read_text(encoding="utf-8") == "v1"
+    assert not (project.repo_dir / "extra.gd").exists()
+    assert project.repo().head() == project.repo().tag_sha("cp/prototype")
+    with pytest.raises(PipelineError, match="no checkpoint tag"):
+        rollback(project, "cp/nope")
+
+
+def test_rollback_from_blocked_to_plan_restarts_m1(cfg):
+    from harness.orchestrator.pipeline import rollback
+
+    runner = MockRunner([MockResponse(files={f"f{i}.txt": str(i)}) for i in range(3)])
+    project, pipeline = make(cfg, runner, verify_requires("never.gd", "ERROR: same"))
+    assert pipeline.run()["state"] == "BLOCKED"
+    assert rollback(project, "cp/plan") == "MILESTONE m1"
+    st = project.state()
+    assert st["phase"] == "implement" and st["attempt"] == 0 and st["verify_fingerprints"] == []
+    assert not (project.repo_dir / "f0.txt").exists()
+    second = MockRunner([MockResponse(files={"never.gd": "x"})])
+    st = Pipeline(cfg, project, second, verify_requires("never.gd"), godot_bin=Path(sys.executable)).run()
+    assert st["state"] == "HUMAN_REVIEW"
+    assert "jump over one gap" in second.requests[0].prompt  # a fresh implement of m1
+
+
+def test_agent_time_limit_blocks(cfg):
+    cfg.raw["limits"]["project_wall_clock_h"] = 0.0001  # 0.36 s
+    runner = MockRunner([MockResponse(files={"other.gd": "x"})])
+    original = runner.run
+
+    def slow(req):
+        result = original(req)
+        result.duration_s = 1.0
+        return result
+
+    runner.run = slow
+    project, pipeline = make(cfg, runner, verify_requires("game.gd"))
+    st = pipeline.run()
+    assert st["state"] == "BLOCKED" and st["blocked_reason"].startswith("limit:")
+    assert len(runner.requests) == 1

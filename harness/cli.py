@@ -92,6 +92,16 @@ def cmd_approve(args: argparse.Namespace, cfg: Config) -> int:
     return 0
 
 
+def cmd_rollback(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import rollback
+
+    project = open_project(cfg, args.project)
+    gate = bool((cfg.raw.get("gates") or {}).get("human_review_after_prototype", True))
+    target = rollback(project, args.to, gate_after_m1=gate)
+    print(f"rolled back to {args.to}; state {target}; next: harness run {project.name}")
+    return 0
+
+
 def cmd_revise(args: argparse.Namespace, cfg: Config) -> int:
     from harness.orchestrator.pipeline import request_revision
 
@@ -192,6 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("--scenario", action="append", help="scenario id or file name; repeat for several")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("rollback", help="return the game to a checkpoint tag (cp/plan, cp/prototype, cp/m2, ...)")
+    p.add_argument("project")
+    p.add_argument("--to", required=True, help="checkpoint tag")
+    p.set_defaults(func=cmd_rollback)
 
     p = sub.add_parser("approve", help="at HUMAN_REVIEW: accept the prototype and continue with the next milestone")
     p.add_argument("project")
