@@ -547,6 +547,15 @@ timeout_frames: 600
 - **Engineer получает scratch-папку** (`harness/scratch/`, `--add-dir`) и копию последнего отчёта в `scratch/last_report/` (скриншоты тоже), путь передаётся в fix-промпт.
 - **`harness test`** проверяет текущий коммит без агентов, не меняет состояние пайплайна, пишет событие `TEST_FINISHED`.
 
+**Уточнения по итогам этапа 4 (2026-10-10).** Приоритет у этого списка над пунктом 7 выше:
+- **Web-Test сборка** = пресет `Web` из `export_presets.cfg` игры, применённый к временной копии репозитория, куда Harness кладёт probe (`harness/verify/gdscript/web_probe.gd`) последней автозагрузкой. В репозитории игры probe нет. Пресет `Web` однопоточный (`variant/thread_support=false`), COOP/COEP не нужны, хватает статического `http.server` на `127.0.0.1`.
+- **Probe публикует снимок в `window.harnessState`** (JSON каждые 5 кадров: `ready`, `muted`, `platform.focused/touch_mode`, `game` = `game_state()`). Callback'и JavaScriptBridge не возвращают значения в JS, поэтому снимок пишется, а не запрашивается.
+- **Chromium headless с SwiftShader** (`--use-angle=swiftshader --enable-unsafe-swiftshader`) даёт WebGL 2 без GPU. Программный рендер медленный (3D около 11–20 fps), поэтому страницы открываются по одной; производительность в этой проверке не измеряется.
+- **Godot 4.4 в Web не присылает `NOTIFICATION_APPLICATION_FOCUS_OUT`**, только `WM_WINDOW_FOCUS_OUT` при потере фокуса canvas; на `visibilitychange` и `blur` окна ничего. Поэтому `Platform` в Web слушает `visibilitychange` и `blur`/`focus` окна через JavaScriptBridge. Проверка `web_focus` подменяет `document.hidden` и шлёт события.
+- **Проверки:** `web_export` (размер сборки в отчёте), `web_desktop` (1280×720: загрузка, ноль `console.error`/`pageerror`, скриншот), `web_mobile` (390×844, `is_mobile`, touch, DPR 2: тап включает `Platform.touch_mode`, скриншоты в портрете и ландшафте), `web_focus` (скрыта страница → звук выключен, видна → включён). Пустой кадр ловится так же, как в `screens` (один цвет в копии 160×160).
+- **Reload/сохранения:** `user://` в Web переживает перезагрузку (проверено вручную). Проверка прогресса конкретной игры требует знания контракта и отложена до приёмочных сценариев этапа 5.
+- **Playwright** ставится как extra `web` (`uv sync --extra web`, `playwright install chromium`). Без него web-проверки `skipped`, `harness doctor` предупреждает. Отключение: `verify.web: false`.
+
 ### 5.3 Evaluator
 
 Получает evidence-пакет (пути к отчётам, скриншотам, логам, diff вехи, критерии), читает код и скриншоты (инструмент Read умеет изображения), может написать **дополнительные сценарии «на слом»** (граничные случаи, спам ввода, пауза в неудобный момент, смерть во время перехода) в свою scratch-папку и прогнать их той же командой. Возвращает `EvalReport` по JSON-схеме:
