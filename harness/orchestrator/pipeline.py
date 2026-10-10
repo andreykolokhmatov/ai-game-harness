@@ -64,6 +64,7 @@ class Pipeline:
         verify: VerifyFn,
         godot_bin: Path,
         clock: Callable[[], float] = time.time,
+        ignore_pause_until: bool = False,
     ):
         self.cfg = cfg
         self.project = project
@@ -71,6 +72,8 @@ class Pipeline:
         self.verify_fn = verify
         self.godot_bin = godot_bin
         self.clock = clock
+        # The limit can reset earlier than the recorded time (plan change, early reset): try now once.
+        self._ignore_pause_until = ignore_pause_until
         self.log = project.log()
         self._infra_failures = 0
         self._carry_interruptions = 0
@@ -288,8 +291,9 @@ class Pipeline:
     def _unpause(self, st: State) -> bool:
         paused = st["paused"] or {}
         resets_at = paused.get("resets_at")
-        if resets_at and self.clock() < float(resets_at):
+        if resets_at and self.clock() < float(resets_at) and not self._ignore_pause_until:
             return False
+        self._ignore_pause_until = False
         self.enter(paused.get("state") or "MILESTONE", milestone=paused.get("milestone"), phase=paused.get("phase"),
                    resume_session=paused.get("session_id"))
         return True

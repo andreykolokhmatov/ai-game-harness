@@ -61,7 +61,8 @@ def cmd_run(args: argparse.Namespace, cfg: Config) -> int:
     if verify is None:
         print(godot_bin, file=sys.stderr)
         return 2
-    pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=verify, godot_bin=godot_bin)
+    pipeline = Pipeline(cfg, project, ClaudeCliRunner([cfg.claude_bin]), verify=verify, godot_bin=godot_bin,
+                        ignore_pause_until=args.now)
     wait = args.wait or str((cfg.raw.get("usage_limit") or {}).get("on_hit", "pause")) == "wait"
     while True:
         state = pipeline.run()
@@ -207,6 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("project")
         p.add_argument("--wait", action="store_true", help="on a usage-limit pause, wait for the reset and continue")
+        p.add_argument("--now", action="store_true", help="continue a paused project now, before its recorded reset time")
         p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("test", help="run only the checks (no agents) on the current game commit")

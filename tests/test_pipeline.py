@@ -433,3 +433,32 @@ def test_agent_time_limit_blocks(cfg):
     st = pipeline.run()
     assert st["state"] == "BLOCKED" and st["blocked_reason"].startswith("limit:")
     assert len(runner.requests) == 1
+
+
+def limited_runner(responses, resets_at=5000):
+    runner = MockRunner(responses)
+    original = runner.run
+
+    def run(req):
+        result = original(req)
+        if result.status == "usage_limit":
+            result.rate_limit = {"status": "rejected", "resetsAt": resets_at}
+        return result
+
+    runner.run = run
+    return runner
+
+
+def test_run_now_tries_before_the_recorded_reset(cfg):
+    clock = lambda: 1000.0  # noqa: E731 (always before the reset at 5000)
+    project, pipeline = make(cfg, limited_runner([MockResponse(status="usage_limit")]), verify_requires("game.gd"),
+                             clock=clock)
+    assert pipeline.run()["state"] == "PAUSED"
+    still = limited_runner([MockResponse(status="usage_limit")])
+    st = Pipeline(cfg, project, still, verify_requires("game.gd"), godot_bin=Path(sys.executable), clock=clock,
+                  ignore_pause_until=True).run()
+    assert st["state"] == "PAUSED" and len(still.requests) == 1 and st["attempt"] == 0  # tried once, paused again
+    free = limited_runner([MockResponse(files={"game.gd": "x"})])
+    st = Pipeline(cfg, project, free, verify_requires("game.gd"), godot_bin=Path(sys.executable), clock=clock,
+                  ignore_pause_until=True).run()
+    assert st["state"] == "HUMAN_REVIEW"
