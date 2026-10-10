@@ -8,7 +8,6 @@ harness/artifacts/ (originals) and repo/docs/ (what the other roles read).
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
@@ -17,14 +16,12 @@ import yaml
 from harness.verify.contract import STATE_TYPES
 
 DOC_FILES = ("GDD.md", "ACCEPTANCE.yaml", "CONTRACT.yaml", "PLAN.md")
-_ID = re.compile(r"^[a-z][a-z0-9_]*$")
-_CRITERION_ID = re.compile(r"^AC-\d+$")
 
 _STR = {"type": "string"}
 PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["title", "dimension", "gdd", "contract", "milestones", "acceptance"],
+    "required": ["title", "dimension", "gdd", "contract", "milestones"],
     "properties": {
         "title": _STR,
         "dimension": {"type": "string", "enum": ["2d", "3d"]},
@@ -59,54 +56,55 @@ PLAN_SCHEMA: dict[str, Any] = {
         "milestones": {
             "type": "array",
             "minItems": 1,
+            "description": "In build order; the first one is the playable prototype",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["id", "title", "goal"],
-                "properties": {"id": _STR, "title": _STR, "goal": _STR},
-            },
-        },
-        "acceptance": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["id", "milestone", "description", "verify"],
-                "properties": {"id": _STR, "milestone": _STR, "description": _STR, "verify": _STR},
+                "required": ["title", "goal", "criteria"],
+                "properties": {
+                    "title": _STR,
+                    "goal": _STR,
+                    "criteria": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["description", "verify"],
+                            "properties": {"description": _STR, "verify": {
+                                "type": "string", "description": "How a test proves it through the Game Contract"}},
+                        },
+                    },
+                },
             },
         },
     },
 }
 
 
+def normalize(raw: dict[str, Any]) -> dict[str, Any]:
+    """Planner output -> plan with Harness-assigned ids: milestones m1..mN, criteria AC-1..AC-K."""
+    plan = {k: v for k, v in raw.items() if k != "milestones"}
+    plan["milestones"], plan["acceptance"] = [], []
+    for i, m in enumerate(raw.get("milestones") or [], start=1):
+        plan["milestones"].append({"id": f"m{i}", "title": m.get("title", ""), "goal": m.get("goal", "")})
+        for c in m.get("criteria") or []:
+            plan["acceptance"].append({"id": f"AC-{len(plan['acceptance']) + 1}", "milestone": f"m{i}",
+                                       "description": c.get("description", ""), "verify": c.get("verify", "")})
+    return plan
+
+
 def validate_plan(plan: dict[str, Any], max_milestones: int) -> list[str]:
     """Problems the schema cannot express. Empty list: the plan is usable."""
     problems: list[str] = []
-    milestones = plan.get("milestones") or []
-    ids = [m.get("id") for m in milestones]
-    if not ids or ids[0] != "m1":
-        problems.append("the first milestone must have id 'm1' (the playable prototype)")
+    ids = [m["id"] for m in plan.get("milestones") or []]
+    if not ids:
+        problems.append("the plan has no milestones")
     if len(ids) > max_milestones:
         problems.append(f"{len(ids)} milestones; at most {max_milestones} are allowed")
-    if len(set(ids)) != len(ids):
-        problems.append("milestone ids must be unique")
-    for mid in ids:
-        if not isinstance(mid, str) or not _ID.match(mid):
-            problems.append(f"milestone id '{mid}' must be lowercase letters, digits and '_'")
     criteria = plan.get("acceptance") or []
-    seen: set[str] = set()
-    for c in criteria:
-        cid = c.get("id")
-        if not isinstance(cid, str) or not _CRITERION_ID.match(cid):
-            problems.append(f"criterion id '{cid}' must look like AC-1")
-        elif cid in seen:
-            problems.append(f"criterion id {cid} is used twice")
-        seen.add(cid)
-        if c.get("milestone") not in ids:
-            problems.append(f"criterion {cid} refers to unknown milestone '{c.get('milestone')}'")
     for mid in ids:
-        if not any(c.get("milestone") == mid for c in criteria):
+        if not any(c["milestone"] == mid for c in criteria):
             problems.append(f"milestone {mid} has no acceptance criteria")
     contract = plan.get("contract") or {}
     keys = [s.get("key") for s in contract.get("state") or []]

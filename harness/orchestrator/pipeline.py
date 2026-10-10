@@ -161,7 +161,8 @@ class Pipeline:
         self.emit("STEP_STARTED", {"kind": "plan", "attempt": attempt, "start_commit": repo.head(), "interruptions": 0},
                   step_id=step_id)
         result = self._run_agent("planner", prompt, step_id, None, json_schema=planner.PLAN_SCHEMA, add_dirs=[])
-        plan = result.structured_output if result.status == "ok" else None
+        raw = result.structured_output if result.status == "ok" else None
+        plan = planner.normalize(raw) if raw else None
         problems = planner.validate_plan(plan, self.max_milestones) if plan else []
         status = result.status if plan is not None or result.status != "ok" else "agent_error"
         self.emit("STEP_FINISHED", {"kind": "plan", "status": status}, step_id=step_id)

@@ -11,3 +11,4 @@ What makes a good plan:
 - 3 to 8 criteria per milestone. Cover the core loop, every control (keyboard and touch), the lose and win conditions, restart, pause on focus loss, and that the screen layout works at 16:9, 9:16 and 4:3.
 - The contract is the only interface tests use. `state` must include `scene` (the current screen name) and everything the criteria refer to: player position and alive state, score, level, lives, win and lose flags, paused. Commands let tests reach a situation fast (`set_level`, `kill_player`, `add_score`); they change state, never fake a result.
 - Use 2D unless the idea clearly asks for 3D.
+- The Harness numbers milestones (m1, m2, ...) and criteria (AC-1, AC-2, ...) itself: do not put ids in titles or descriptions.

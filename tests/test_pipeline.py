@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from harness.config import DEFAULT_CONFIG_DIR, load_config
+from harness.orchestrator import planner
 from harness.orchestrator.pipeline import Pipeline, PipelineError
 from harness.project import create_project
 from harness.runners.mock import MockResponse, MockRunner
@@ -37,7 +38,7 @@ def cfg(tmp_path):
     return load_config(DEFAULT_CONFIG_DIR, env={"HARNESS_WORKSPACE": str(tmp_path / "ws")})
 
 
-PLAN = {
+RAW_PLAN = {  # what the Planner returns: no ids, criteria nested in milestones
     "title": "Hop",
     "dimension": "2d",
     "gdd": "# Hop\n\nJump over gaps.",
@@ -47,13 +48,14 @@ PLAN = {
                   {"key": "score", "type": "int", "description": "points"}],
         "commands": [{"name": "kill_player", "args": [], "description": "lose a life"}],
     },
-    "milestones": [{"id": "m1", "title": "Prototype", "goal": "jump over one gap"},
-                   {"id": "m2", "title": "Polish", "goal": "three levels"}],
-    "acceptance": [
-        {"id": "AC-1", "milestone": "m1", "description": "jump works", "verify": "press jump, y decreases"},
-        {"id": "AC-2", "milestone": "m2", "description": "three levels", "verify": "set_level 3"},
+    "milestones": [
+        {"title": "Prototype", "goal": "jump over one gap",
+         "criteria": [{"description": "jump works", "verify": "press jump, y decreases"}]},
+        {"title": "Polish", "goal": "three levels",
+         "criteria": [{"description": "three levels", "verify": "set_level 3"}]},
     ],
 }
+PLAN = planner.normalize(RAW_PLAN)
 
 
 def make(cfg, runner, verify, clock=None, planned=True):
@@ -224,7 +226,7 @@ def test_revise_only_at_human_review(cfg):
 
 
 def test_planner_writes_documents_and_starts_m1(cfg):
-    runner = MockRunner([MockResponse(structured_output=PLAN), MockResponse(files={"game.gd": "extends Node\n"})])
+    runner = MockRunner([MockResponse(structured_output=RAW_PLAN), MockResponse(files={"game.gd": "extends Node\n"})])
     project, pipeline = make(cfg, runner, verify_requires("game.gd"), planned=False)
     st = pipeline.run()
     assert st["state"] == "HUMAN_REVIEW" and st["milestone"] == "m1"
@@ -241,12 +243,12 @@ def test_planner_writes_documents_and_starts_m1(cfg):
 
 
 def test_invalid_plan_is_retried_with_the_problems(cfg):
-    bad = {**PLAN, "milestones": [{"id": "proto", "title": "x", "goal": "y"}]}
-    runner = MockRunner([MockResponse(structured_output=bad), MockResponse(structured_output=PLAN),
+    bad = {**RAW_PLAN, "milestones": RAW_PLAN["milestones"] * 2}  # 4 milestones, at most 3
+    runner = MockRunner([MockResponse(structured_output=bad), MockResponse(structured_output=RAW_PLAN),
                          MockResponse(files={"game.gd": "x"})])
     project, pipeline = make(cfg, runner, verify_requires("game.gd"), planned=False)
     assert pipeline.run()["state"] == "HUMAN_REVIEW"
-    assert "first milestone must have id 'm1'" in runner.requests[1].prompt
+    assert "at most 3 are allowed" in runner.requests[1].prompt
     assert types(project).count("PLAN_REJECTED") == 1
 
 
@@ -258,11 +260,11 @@ def test_planner_gives_up_after_two_bad_plans(cfg):
 
 
 def test_kill_during_planning_reruns_the_planner(cfg):
-    first = MockRunner([MockResponse(structured_output=PLAN, side_effect=kill)])
+    first = MockRunner([MockResponse(structured_output=RAW_PLAN, side_effect=kill)])
     project, pipeline = make(cfg, first, verify_requires("game.gd"), planned=False)
     with pytest.raises(SimulatedKill):
         pipeline.run()
-    second = MockRunner([MockResponse(structured_output=PLAN), MockResponse(files={"game.gd": "x"})])
+    second = MockRunner([MockResponse(structured_output=RAW_PLAN), MockResponse(files={"game.gd": "x"})])
     st = Pipeline(cfg, project, second, verify_requires("game.gd"), godot_bin=Path(sys.executable)).run()
     assert st["state"] == "HUMAN_REVIEW"
     assert second.requests[0].role == "planner" and second.requests[0].resume_session_id is None
