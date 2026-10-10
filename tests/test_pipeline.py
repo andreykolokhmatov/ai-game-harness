@@ -35,6 +35,14 @@ def verify_requires(filename: str, message: str = "ERROR: game.gd is missing"):
 
 @pytest.fixture
 def cfg(tmp_path):
+    """Pipeline without the Evaluator: a green verify accepts the milestone."""
+    config = load_config(DEFAULT_CONFIG_DIR, env={"HARNESS_WORKSPACE": str(tmp_path / "ws")})
+    config.raw.setdefault("gates", {})["evaluator"] = False
+    return config
+
+
+@pytest.fixture
+def cfg_eval(tmp_path):
     return load_config(DEFAULT_CONFIG_DIR, env={"HARNESS_WORKSPACE": str(tmp_path / "ws")})
 
 
@@ -283,3 +291,69 @@ def test_approve_runs_the_next_milestone_to_done(cfg):
     assert project.repo().tag_sha("cp/m2") == project.repo().head()
     with pytest.raises(PipelineError, match="only at HUMAN_REVIEW"):
         approve(project)
+
+
+def eval_report(status="pass", verdict=None, issues=()):
+    return {"verdict": verdict or ("PASS" if status == "pass" and not issues else "FAIL"), "summary": "s",
+            "criteria": [{"id": "AC-1", "status": status, "evidence": "scenario jump"}], "issues": list(issues)}
+
+
+BUG = {"severity": "major", "category": "controls", "description": "jump ignores touch",
+       "reproduction": "tap the jump button", "expected": "player jumps", "actual": "nothing", "evidence": "shot"}
+
+
+def test_evaluator_accepts_the_milestone(cfg_eval):
+    runner = MockRunner([MockResponse(files={"game.gd": "x"}), MockResponse(structured_output=eval_report())])
+    project, pipeline = make(cfg_eval, runner, verify_requires("game.gd"))
+    st = pipeline.run()
+    assert st["state"] == "HUMAN_REVIEW" and st["last_eval"]["passed"]
+    req = runner.requests[1]
+    eval_dir = project.harness_dir / "eval" / st["last_verify"]["sha"][:12]
+    assert req.role == "evaluator" and req.cwd == eval_dir and req.json_schema is not None
+    assert "AC-1: jump works" in req.prompt and "game.gd" in req.prompt  # criteria and the milestone diff
+    assert "Write(./scenarios/**)" in req.allowed_tools and "Write(./game/**)" in req.disallowed_tools
+    assert (project.harness_dir / st["last_verify"]["report"] / "eval.json").is_file()
+    assert not (eval_dir / "game").exists()  # the game copy is removed after the evaluation
+
+
+def test_evaluator_rejection_goes_to_the_engineer(cfg_eval):
+    runner = MockRunner([
+        MockResponse(files={"game.gd": "v1"}),
+        MockResponse(structured_output=eval_report("fail", issues=[BUG])),
+        MockResponse(files={"game.gd": "v2"}),
+        MockResponse(structured_output=eval_report()),
+    ])
+    project, pipeline = make(cfg_eval, runner, verify_requires("game.gd"))
+    st = pipeline.run()
+    assert st["state"] == "HUMAN_REVIEW" and st["attempt"] == 2
+    fix = runner.requests[2].prompt
+    assert "AC-1 fail: jump works" in fix and "tap the jump button" in fix and "eval.json" in fix
+    assert (project.scratch_dir / "last_report" / "eval.json").is_file()
+
+
+def test_inconclusive_criterion_is_not_a_pass(cfg_eval):
+    runner = MockRunner([MockResponse(files={"game.gd": "v1"}),
+                         MockResponse(structured_output=eval_report("inconclusive", verdict="PASS")),
+                         MockResponse(files={"game.gd": "v2"}), MockResponse(structured_output=eval_report())])
+    project, pipeline = make(cfg_eval, runner, verify_requires("game.gd"))
+    assert pipeline.run()["state"] == "HUMAN_REVIEW"
+    ev = [e for e in project.log().read() if e["type"] == "EVAL_FINISHED"]
+    assert not ev[0]["data"]["passed"] and ev[0]["data"]["reasons"] == ["AC-1: inconclusive"]
+
+
+def test_evaluator_without_report_blocks_without_costing_attempts(cfg_eval):
+    runner = MockRunner([MockResponse(files={"game.gd": "x"}), MockResponse(structured_output=None),
+                         MockResponse(structured_output=None)])
+    project, pipeline = make(cfg_eval, runner, verify_requires("game.gd"))
+    st = pipeline.run()
+    assert st["state"] == "BLOCKED" and st["blocked_reason"].startswith("evaluator_failure")
+    assert st["attempt"] == 1
+
+
+def test_same_evaluator_finding_opens_the_circuit_breaker(cfg_eval):
+    responses = []
+    for i in range(3):
+        responses += [MockResponse(files={"game.gd": f"v{i}"}), MockResponse(structured_output=eval_report("fail", issues=[BUG]))]
+    project, pipeline = make(cfg_eval, MockRunner(responses), verify_requires("game.gd"))
+    st = pipeline.run()
+    assert st["state"] == "BLOCKED" and "circuit breaker" in st["blocked_reason"]

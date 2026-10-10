@@ -1,4 +1,4 @@
-"""Pipeline: SPEC (Planner) -> MILESTONE m1..mN (IMPLEMENT -> VERIFY -> FIX) -> DONE.
+"""Pipeline: SPEC (Planner) -> MILESTONE m1..mN (IMPLEMENT -> VERIFY -> EVALUATE -> FIX) -> DONE.
 
 `run` is idempotent: it continues from the last consistent state recorded in
 the event log, including a step that was interrupted by a crash or kill.
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from harness.config import Config
-from harness.orchestrator import planner
+from harness.orchestrator import evaluator, planner
 from harness.platform.env import agent_env, write_shim
 from harness.project import Project
 from harness.prompts.builder import render, write_system_prompt
@@ -35,6 +35,7 @@ MAX_INFRA_RETRIES = 3
 INFRA_PAUSE_S = 600
 MILESTONE_CHECKPOINTS = {"m1": "cp/prototype"}
 MAX_PLAN_ATTEMPTS = 2
+MAX_EVAL_FAILURES = 2  # Evaluator runs without a usable report before BLOCKED (evaluator_failure)
 ENGINEER_KINDS = ("implement", "fix", "revise")  # steps that change the repo
 LAST_REPORT = "last_report"  # copy of the latest verify report inside the scratch dir
 
@@ -73,6 +74,8 @@ class Pipeline:
         self._infra_failures = 0
         self._carry_interruptions = 0
         self._plan_feedback: list[str] = []
+        self._eval_failures = 0
+        self.use_evaluator = bool((cfg.raw.get("gates") or {}).get("evaluator", True))
         limits = cfg.raw.get("limits") or {}
         self.max_fix_attempts = int(limits.get("fix_attempts_per_milestone", 4))
         self.breaker = int(limits.get("circuit_breaker_same_fingerprint", 3))
@@ -122,7 +125,7 @@ class Pipeline:
         if phase == "implement":
             self._agent_step(st, "implement", self._milestone_prompt(st["milestone"]))
         elif phase == "fix":
-            last = st["last_verify"] or {}
+            last = st["last_failure"] or st["last_verify"] or {}
             prompt = render(
                 "tasks/fix",
                 report_dir=(self.project.scratch_dir / LAST_REPORT).as_posix(),
@@ -136,6 +139,8 @@ class Pipeline:
             self._agent_step(st, "revise", render("tasks/revise", comment=st["review_comment"] or ""))
         elif phase == "verify":
             self._verify(st)
+        elif phase == "evaluate":
+            self._evaluate(st)
         else:
             raise PipelineError(f"unknown milestone phase {phase}")
 
@@ -315,6 +320,7 @@ class Pipeline:
         json_schema: dict[str, Any] | None = None,
         cwd: Path | None = None,
         add_dirs: list[Path] | None = None,
+        scratch: Path | None = None,
     ) -> AgentResult:
         role_model = self.cfg.roles[role]
         policy = policy_for(role)
@@ -326,7 +332,7 @@ class Pipeline:
             godot_version=self.cfg.godot.version,
             check_scripts=CHECK_SCRIPTS_GD.as_posix(),
             scenario_runner=SCENARIO_RUNNER_GD.as_posix(),
-            scratch=self.project.scratch_dir.as_posix(),
+            scratch=(scratch or self.project.scratch_dir).as_posix(),
         )
         self.project.scratch_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "prompt.md").write_text(prompt, encoding="utf-8")
@@ -374,6 +380,59 @@ class Pipeline:
         self.emit("AGENT_FINISHED", {"role": role, "model": req.model, **result.to_event_data()}, **context)
         return result
 
+    # ---- evaluate ------------------------------------------------------
+
+    def _evaluate(self, st: State) -> None:
+        last = st["last_verify"] or {}
+        sha = last["sha"]
+        report_dir = self.project.harness_dir / last["report"]
+        plan = planner.load_plan(self.project.artifacts_dir)
+        m = planner.milestone(plan, st["milestone"])
+        criteria_ids = [c["id"] for c in m["criteria"]]
+        eval_dir = evaluator.prepare_workspace(self.project.harness_dir / "eval" / sha[:12], self.project.repo_dir,
+                                               report_dir)
+        repo = self.project.repo()
+        base = (st["last_checkpoint"] or {}).get("commit") or repo.head()
+        prompt = render(
+            "tasks/evaluate", milestone_id=m["id"], title=m["title"], goal=m["goal"],
+            criteria=planner.criteria_text(m["criteria"]), base=base[:12],
+            diff_stat=repo.diff_stat(base, sha) or "(no changes)",
+            scenario_runner=SCENARIO_RUNNER_GD.as_posix(), scenarios_dir=(eval_dir / "scenarios").as_posix(),
+        )
+        n = sum(1 for e in self.log.read() if e["type"] == "EVAL_FINISHED" and e.get("milestone") == m["id"]) + 1
+        step_id = f"{m['id']}.evaluate.{n}"
+        self.emit("STEP_STARTED", {"kind": "evaluate", "start_commit": sha, "interruptions": 0},
+                  milestone=m["id"], step_id=step_id)
+        result = self._run_agent("evaluator", prompt, step_id, None, json_schema=evaluator.EVAL_SCHEMA,
+                                 cwd=eval_dir, add_dirs=[], scratch=eval_dir / "scenarios")
+        report = result.structured_output if result.status == "ok" else None
+        self.emit("STEP_FINISHED", {"kind": "evaluate", "status": result.status if report else "agent_error"},
+                  milestone=m["id"], step_id=step_id)
+        if self._handled_failure(result):
+            return
+        if report is None:
+            self._eval_failures += 1
+            if self._eval_failures >= MAX_EVAL_FAILURES:
+                self.block(f"evaluator_failure: no usable report in {self._eval_failures} runs ({result.status})")
+            return  # the same phase runs again; this does not cost the Engineer an attempt
+        self._eval_failures = 0
+        passed, reasons = evaluator.verdict(report, criteria_ids)
+        evaluator.save(report, report_dir, eval_dir)
+        self._publish_report(report_dir)
+        self.emit("EVAL_FINISHED", {
+            "sha": sha, "passed": passed, "verdict": report.get("verdict"), "summary": report.get("summary"),
+            "reasons": reasons, "report": last["report"],
+            "criteria": {c.get("id"): c.get("status") for c in report.get("criteria") or []},
+            "issues": len(report.get("issues") or []),
+            "fingerprint": None if passed else evaluator.fingerprint(report, criteria_ids),
+            "digest": None if passed else evaluator.digest(report, m["criteria"]),
+        }, milestone=m["id"], step_id=step_id)
+        st = self.state()
+        if passed:
+            self._milestone_passed(st, sha)
+        else:
+            self._check_failed(st)
+
     def _milestone_passed(self, st: State, sha: str) -> None:
         repo = self.project.repo()
         tag = MILESTONE_CHECKPOINTS.get(st["milestone"], f"cp/{st['milestone']}")
@@ -418,13 +477,20 @@ class Pipeline:
         )
         st = self.state()
         if report.passed:
-            self._milestone_passed(st, sha)
+            if self.use_evaluator:
+                self.enter("MILESTONE", milestone=st["milestone"], phase="evaluate")
+            else:
+                self._milestone_passed(st, sha)
             return
+        self._check_failed(st)
+
+    def _check_failed(self, st: State) -> None:
+        """After a failed verify or evaluation: circuit breaker, attempt limit, or a fix step."""
         fps = st["verify_fingerprints"]
         if len(fps) >= self.breaker and len(set(fps[-self.breaker :])) == 1:
             self.block(f"circuit breaker: the same failure {self.breaker} times in a row: {fps[-1]}")
         elif st["attempt"] >= 1 + self.max_fix_attempts:
-            self.block(f"verify still failing after {self.max_fix_attempts} fix attempts")
+            self.block(f"checks still failing after {self.max_fix_attempts} fix attempts")
         else:
             self.enter("MILESTONE", milestone=st["milestone"], phase="fix")
 

@@ -40,3 +40,4 @@ limits:
 
 gates:
   human_review_after_prototype: true
+  evaluator: true                    # independent Evaluator after a green verify (false: verify alone accepts)

@@ -28,7 +28,9 @@ INITIAL_STATE: State = {
     "attempt": 0,  # finished plan (in SPEC) or implement/fix/revise steps in the current milestone
     "plan": None,  # {title, milestones: [ids]} once the Planner's plan is accepted
     "last_verify": None,
-    "verify_fingerprints": [],  # failure fingerprints of consecutive failed verifies
+    "last_eval": None,
+    "last_failure": None,  # {source: verify | eval, sha, digest, report}: what the next fix step gets
+    "verify_fingerprints": [],  # fingerprints of consecutive failed checks (verify or eval) in this milestone
     "paused": None,  # where to return after PAUSED
     "review_comment": None,  # last `harness revise` comment
     "open_step": None,
@@ -61,6 +63,8 @@ def _state_entered(s: State, e: Event) -> None:
         s["attempt"] = 0
         s["verify_fingerprints"] = []
         s["last_verify"] = None
+        s["last_eval"] = None
+        s["last_failure"] = None
     s["phase"] = d.get("phase")
     s["paused"] = None
     if s["state"] != "BLOCKED":
@@ -81,9 +85,19 @@ def _paused(s: State, e: Event) -> None:
 def _verify_finished(s: State, e: Event) -> None:
     d = e["data"]
     s["last_verify"] = {"sha": d["sha"], "passed": d["passed"], "report": d.get("report"), "digest": d.get("digest")}
+    if not d["passed"]:
+        s["last_failure"] = {"source": "verify", **s["last_verify"]}
+        s["verify_fingerprints"] = [*s["verify_fingerprints"], d.get("fingerprint")]
+
+
+def _eval_finished(s: State, e: Event) -> None:
+    d = e["data"]
+    s["last_eval"] = {"sha": d["sha"], "passed": d["passed"], "report": d.get("report"), "digest": d.get("digest"),
+                      "summary": d.get("summary")}
     if d["passed"]:
         s["verify_fingerprints"] = []
     else:
+        s["last_failure"] = {"source": "eval", **s["last_eval"]}
         s["verify_fingerprints"] = [*s["verify_fingerprints"], d.get("fingerprint")]
 
 
@@ -147,6 +161,7 @@ def _human_decision(s: State, e: Event) -> None:
         s["review_comment"] = e["data"].get("comment")
         s["attempt"] = 0  # a new round of work with its own fix budget
         s["verify_fingerprints"] = []
+        s["last_failure"] = None
 
 
 def _plan_accepted(s: State, e: Event) -> None:
@@ -172,6 +187,7 @@ REDUCERS: dict[str, Callable[[State, Event], None]] = {
     "HUMAN_DECISION": _human_decision,
     "VERIFY_FINISHED": _verify_finished,
     "PLAN_ACCEPTED": _plan_accepted,
+    "EVAL_FINISHED": _eval_finished,
 }
 
 

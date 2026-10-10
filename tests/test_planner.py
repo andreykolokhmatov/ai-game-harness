@@ -30,3 +30,9 @@ def test_normalize_assigns_ids_in_order():
     assert [(c["id"], c["milestone"]) for c in plan["acceptance"]] == [("AC-1", "m1"), ("AC-2", "m1"), ("AC-3", "m2")]
     assert planner.validate_plan(plan, 3) == []
     assert planner.validate_plan(planner.normalize({**raw, "milestones": raw["milestones"] * 2}), 3)
+
+
+def test_eval_schema_is_consistent():
+    from harness.orchestrator import evaluator
+
+    _walk(evaluator.EVAL_SCHEMA)
