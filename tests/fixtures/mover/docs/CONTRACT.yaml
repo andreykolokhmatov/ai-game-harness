@@ -1,0 +1,8 @@
+input_actions: [move_right]
+state:
+  scene: string
+  player.position: vec2
+  taps: int
+  touch_mode: bool
+commands:
+  teleport: {args: [x, y], description: "move the player to a point"}
