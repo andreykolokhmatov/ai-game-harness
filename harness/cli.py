@@ -83,6 +83,15 @@ def cmd_test(args: argparse.Namespace, cfg: Config) -> int:
     return 0 if report.passed else 1
 
 
+def cmd_approve(args: argparse.Namespace, cfg: Config) -> int:
+    from harness.orchestrator.pipeline import approve
+
+    project = open_project(cfg, args.project)
+    nxt = approve(project)
+    print(f"approved; next: {nxt}" + ("" if nxt == "DONE" else f" (harness run {project.name})"))
+    return 0
+
+
 def cmd_revise(args: argparse.Namespace, cfg: Config) -> int:
     from harness.orchestrator.pipeline import request_revision
 
@@ -102,6 +111,8 @@ def print_status(name: str, st: dict) -> None:
         f"state       {st['state']}" + (f" ({st['milestone']}, phase {st['phase']})" if st.get("milestone") else ""),
         f"attempt     {st['attempt']}",
     ]
+    if st.get("plan"):
+        lines.append(f"plan        {st['plan']['title']} ({', '.join(st['plan']['milestones'])})")
     if st.get("blocked_reason"):
         lines.append(f"blocked     {st['blocked_reason']}")
     if st.get("paused"):
@@ -181,6 +192,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("project")
     p.add_argument("--scenario", action="append", help="scenario id or file name; repeat for several")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("approve", help="at HUMAN_REVIEW: accept the prototype and continue with the next milestone")
+    p.add_argument("project")
+    p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("revise", help="at HUMAN_REVIEW: send the game back to the engineer with a comment")
     p.add_argument("project")

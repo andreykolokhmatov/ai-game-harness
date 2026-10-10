@@ -37,10 +37,33 @@ def cfg(tmp_path):
     return load_config(DEFAULT_CONFIG_DIR, env={"HARNESS_WORKSPACE": str(tmp_path / "ws")})
 
 
-def make(cfg, runner, verify, clock=None):
+PLAN = {
+    "title": "Hop",
+    "dimension": "2d",
+    "gdd": "# Hop\n\nJump over gaps.",
+    "contract": {
+        "input_actions": ["jump"],
+        "state": [{"key": "scene", "type": "string", "description": "screen"},
+                  {"key": "score", "type": "int", "description": "points"}],
+        "commands": [{"name": "kill_player", "args": [], "description": "lose a life"}],
+    },
+    "milestones": [{"id": "m1", "title": "Prototype", "goal": "jump over one gap"},
+                   {"id": "m2", "title": "Polish", "goal": "three levels"}],
+    "acceptance": [
+        {"id": "AC-1", "milestone": "m1", "description": "jump works", "verify": "press jump, y decreases"},
+        {"id": "AC-2", "milestone": "m2", "description": "three levels", "verify": "set_level 3"},
+    ],
+}
+
+
+def make(cfg, runner, verify, clock=None, planned=True):
+    """A project at MILESTONE m1 (the plan already accepted), unless planned=False."""
     project = create_project(cfg, "simple 2D platformer", "game_001")
     kwargs = {"clock": clock} if clock else {}
-    return project, Pipeline(cfg, project, runner, verify, godot_bin=Path(sys.executable), **kwargs)
+    pipeline = Pipeline(cfg, project, runner, verify, godot_bin=Path(sys.executable), **kwargs)
+    if planned:
+        pipeline.accept_plan(PLAN)
+    return project, pipeline
 
 
 def types(project):
@@ -58,7 +81,8 @@ def test_happy_path_reaches_human_review(cfg):
     assert repo.tag_sha("h/m1.implement.1")
     req = runner.requests[0]
     assert req.model == cfg.roles["engineer"].model_id
-    assert "simple 2D platformer" in req.prompt
+    assert "jump over one gap" in req.prompt and "AC-1: jump works" in req.prompt
+    assert "AC-2" not in req.prompt  # only the criteria of this milestone
     assert req.system_append_file.read_text(encoding="utf-8").startswith("# Role: Engineer")
     assert "Bash" in req.tools and "Edit(.claude/**)" in req.disallowed_tools
     assert "GODOT_BIN" in req.env
@@ -197,3 +221,63 @@ def test_revise_only_at_human_review(cfg):
     project, _ = make(cfg, MockRunner([]), verify_requires("game.gd"))
     with pytest.raises(PipelineError, match="only at HUMAN_REVIEW"):
         request_revision(project, "change it")
+
+
+def test_planner_writes_documents_and_starts_m1(cfg):
+    runner = MockRunner([MockResponse(structured_output=PLAN), MockResponse(files={"game.gd": "extends Node\n"})])
+    project, pipeline = make(cfg, runner, verify_requires("game.gd"), planned=False)
+    st = pipeline.run()
+    assert st["state"] == "HUMAN_REVIEW" and st["milestone"] == "m1"
+    assert st["plan"] == {"title": "Hop", "milestones": ["m1", "m2"]}
+    plan_req = runner.requests[0]
+    assert plan_req.role == "planner" and plan_req.json_schema is not None
+    assert "simple 2D platformer" in plan_req.prompt
+    assert "Bash" not in plan_req.tools and "Write" not in plan_req.tools
+    docs = project.repo_dir / "docs"
+    for name in ("GDD.md", "ACCEPTANCE.yaml", "CONTRACT.yaml", "PLAN.md"):
+        assert (docs / name).is_file() and (project.artifacts_dir / name).is_file()
+    assert "kill_player" in (docs / "CONTRACT.yaml").read_text(encoding="utf-8")
+    assert project.repo().tag_sha("cp/plan")
+
+
+def test_invalid_plan_is_retried_with_the_problems(cfg):
+    bad = {**PLAN, "milestones": [{"id": "proto", "title": "x", "goal": "y"}]}
+    runner = MockRunner([MockResponse(structured_output=bad), MockResponse(structured_output=PLAN),
+                         MockResponse(files={"game.gd": "x"})])
+    project, pipeline = make(cfg, runner, verify_requires("game.gd"), planned=False)
+    assert pipeline.run()["state"] == "HUMAN_REVIEW"
+    assert "first milestone must have id 'm1'" in runner.requests[1].prompt
+    assert types(project).count("PLAN_REJECTED") == 1
+
+
+def test_planner_gives_up_after_two_bad_plans(cfg):
+    runner = MockRunner([MockResponse(structured_output=None), MockResponse(structured_output=None)])
+    project, pipeline = make(cfg, runner, verify_requires("game.gd"), planned=False)
+    st = pipeline.run()
+    assert st["state"] == "BLOCKED" and "valid plan" in st["blocked_reason"]
+
+
+def test_kill_during_planning_reruns_the_planner(cfg):
+    first = MockRunner([MockResponse(structured_output=PLAN, side_effect=kill)])
+    project, pipeline = make(cfg, first, verify_requires("game.gd"), planned=False)
+    with pytest.raises(SimulatedKill):
+        pipeline.run()
+    second = MockRunner([MockResponse(structured_output=PLAN), MockResponse(files={"game.gd": "x"})])
+    st = Pipeline(cfg, project, second, verify_requires("game.gd"), godot_bin=Path(sys.executable)).run()
+    assert st["state"] == "HUMAN_REVIEW"
+    assert second.requests[0].role == "planner" and second.requests[0].resume_session_id is None
+
+
+def test_approve_runs_the_next_milestone_to_done(cfg):
+    from harness.orchestrator.pipeline import approve
+
+    runner = MockRunner([MockResponse(files={"game.gd": "v1"}), MockResponse(files={"game.gd": "v2"})])
+    project, pipeline = make(cfg, runner, verify_requires("game.gd"))
+    assert pipeline.run()["state"] == "HUMAN_REVIEW"
+    assert approve(project) == "MILESTONE m2"
+    st = pipeline.run()
+    assert st["state"] == "DONE" and st["milestone"] == "m2"
+    assert "three levels" in runner.requests[1].prompt and "Earlier milestones are done" in runner.requests[1].prompt
+    assert project.repo().tag_sha("cp/m2") == project.repo().head()
+    with pytest.raises(PipelineError, match="only at HUMAN_REVIEW"):
+        approve(project)

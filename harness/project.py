@@ -46,6 +46,11 @@ class Project:
         return self.harness_dir / ".lock"
 
     @property
+    def artifacts_dir(self) -> Path:
+        """Planner originals (plan.json, GDD.md, ...) and the idea."""
+        return self.harness_dir / "artifacts"
+
+    @property
     def runs_dir(self) -> Path:
         return self.harness_dir / "runs"
 

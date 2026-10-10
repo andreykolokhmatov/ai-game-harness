@@ -1,8 +1,7 @@
-"""MVP-0 pipeline: one milestone (prototype) with IMPLEMENT -> VERIFY -> FIX.
+"""Pipeline: SPEC (Planner) -> MILESTONE m1..mN (IMPLEMENT -> VERIFY -> FIX) -> DONE.
 
 `run` is idempotent: it continues from the last consistent state recorded in
 the event log, including a step that was interrupted by a crash or kill.
-Planner, Evaluator and escalation come in stage 5.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from harness.config import Config
+from harness.orchestrator import planner
 from harness.platform.env import agent_env, write_shim
 from harness.project import Project
 from harness.prompts.builder import render, write_system_prompt
@@ -34,6 +34,8 @@ MAX_INTERRUPTIONS = 2
 MAX_INFRA_RETRIES = 3
 INFRA_PAUSE_S = 600
 MILESTONE_CHECKPOINTS = {"m1": "cp/prototype"}
+MAX_PLAN_ATTEMPTS = 2
+ENGINEER_KINDS = ("implement", "fix", "revise")  # steps that change the repo
 LAST_REPORT = "last_report"  # copy of the latest verify report inside the scratch dir
 
 
@@ -70,12 +72,14 @@ class Pipeline:
         self.log = project.log()
         self._infra_failures = 0
         self._carry_interruptions = 0
+        self._plan_feedback: list[str] = []
         limits = cfg.raw.get("limits") or {}
         self.max_fix_attempts = int(limits.get("fix_attempts_per_milestone", 4))
         self.breaker = int(limits.get("circuit_breaker_same_fingerprint", 3))
         self.run_timeout_min = limits.get("run_timeout_min") or {}
         self.max_turns = limits.get("max_turns") or {}
         self.idle_min = limits.get("idle_output_timeout_min")
+        self.max_milestones = int(limits.get("max_milestones", 3))
 
     # ---- state helpers -------------------------------------------------
 
@@ -100,7 +104,9 @@ class Pipeline:
                 st = self.state()
                 current = st["state"]
                 if current == "CREATED":
-                    self.enter("MILESTONE", milestone="m1", phase="implement")
+                    self.enter("SPEC")
+                elif current == "SPEC":
+                    self._plan(st)
                 elif current == "PAUSED":
                     if not self._unpause(st):
                         return st
@@ -114,8 +120,7 @@ class Pipeline:
     def _milestone(self, st: State) -> None:
         phase = st["phase"]
         if phase == "implement":
-            prompt = render("tasks/prototype", idea=st["idea"])
-            self._agent_step(st, "implement", prompt)
+            self._agent_step(st, "implement", self._milestone_prompt(st["milestone"]))
         elif phase == "fix":
             last = st["last_verify"] or {}
             prompt = render(
@@ -133,6 +138,55 @@ class Pipeline:
             self._verify(st)
         else:
             raise PipelineError(f"unknown milestone phase {phase}")
+
+    def _milestone_prompt(self, milestone_id: str) -> str:
+        plan = planner.load_plan(self.project.artifacts_dir)
+        m = planner.milestone(plan, milestone_id)
+        first = plan["milestones"][0]["id"] == milestone_id
+        context = ("The project is still the bare template: build the game from it." if first else
+                   "Earlier milestones are done and accepted: keep everything that works.")
+        return render("tasks/milestone", milestone_id=m["id"], title=m["title"], goal=m["goal"],
+                      criteria=planner.criteria_text(m["criteria"]), context=context)
+
+    # ---- SPEC: the Planner ------------------------------------------------
+
+    def _plan(self, st: State) -> None:
+        attempt = st["attempt"] + 1
+        step_id = f"spec.plan.{attempt}"
+        prompt = render("tasks/plan", idea=st["idea"], max_milestones=self.max_milestones,
+                        godot_version=self.cfg.godot.version)
+        if self._plan_feedback:
+            prompt += "\n\nYour previous plan was rejected:\n" + "\n".join(f"- {p}" for p in self._plan_feedback)
+        repo = self.project.repo()
+        self.emit("STEP_STARTED", {"kind": "plan", "attempt": attempt, "start_commit": repo.head(), "interruptions": 0},
+                  step_id=step_id)
+        result = self._run_agent("planner", prompt, step_id, None, json_schema=planner.PLAN_SCHEMA, add_dirs=[])
+        plan = result.structured_output if result.status == "ok" else None
+        problems = planner.validate_plan(plan, self.max_milestones) if plan else []
+        status = result.status if plan is not None or result.status != "ok" else "agent_error"
+        self.emit("STEP_FINISHED", {"kind": "plan", "status": status}, step_id=step_id)
+        if self._handled_failure(result):
+            return
+        if plan is None or problems:
+            self._plan_feedback = problems or [f"no structured plan was returned ({result.status})"]
+            self.emit("PLAN_REJECTED", {"problems": self._plan_feedback}, step_id=step_id)
+            if attempt >= MAX_PLAN_ATTEMPTS:
+                self.block(f"the Planner did not produce a valid plan in {attempt} attempts: {self._plan_feedback[0]}")
+            return
+        self.accept_plan(plan, step_id)
+
+    def accept_plan(self, plan: dict[str, Any], step_id: str | None = None) -> None:
+        """Write the documents, commit them, tag cp/plan and start the first milestone."""
+        repo = self.project.repo()
+        planner.write_artifacts(plan, self.project.artifacts_dir, self.project.repo_dir / "docs")
+        sha = repo.commit_all(f"docs: plan for {plan['title']}") or repo.head()
+        repo.tag("cp/plan", sha)
+        milestones = [m["id"] for m in plan["milestones"]]
+        context = {"step_id": step_id} if step_id else {}
+        self.emit("PLAN_ACCEPTED", {"title": plan["title"], "dimension": plan["dimension"], "milestones": milestones,
+                                    "criteria": len(plan["acceptance"]), "commit": sha}, **context)
+        self.emit("CHECKPOINT_CREATED", {"tag": "cp/plan", "commit": sha})
+        self.enter("MILESTONE", milestone=milestones[0], phase="implement")
 
     # ---- recovery ------------------------------------------------------
 
@@ -152,7 +206,7 @@ class Pipeline:
             repo.reset_hard(step["start_commit"])
             self.block(f"step {step['step_id']} was interrupted {interruptions + 1} times")
             return
-        if step.get("session_id") and interruptions == 0:
+        if step.get("kind") in ENGINEER_KINDS and step.get("session_id") and interruptions == 0:
             # Continue the same Claude session: it keeps the context of the interrupted work.
             self._agent_step(
                 st,
@@ -217,33 +271,50 @@ class Pipeline:
         self._after_agent(result)
 
     def _after_agent(self, result: AgentResult) -> None:
+        if self._handled_failure(result):
+            return
+        st = self.state()
+        self.enter("MILESTONE", milestone=st["milestone"], phase="verify")
+
+    def _handled_failure(self, result: AgentResult) -> bool:
+        """Usage limit, infrastructure errors and cancels: True when the caller must stop here.
+        The same phase then runs again (or after PAUSED); these do not count as attempts."""
         if result.status == "usage_limit":
             resets_at = (result.rate_limit or {}).get("resetsAt")
             self.emit("PAUSED", {"reason": "usage_limit", "resets_at": resets_at})
-            return
+            return True
         if result.status == "infra_error":
             if result.infra_error_kind in ("auth", "billing"):
                 self.block(f"Claude Code {result.infra_error_kind} error: {result.error}")
-                return
+                return True
             self._infra_failures += 1
             if self._infra_failures >= MAX_INFRA_RETRIES:
                 self.emit(
                     "PAUSED",
                     {"reason": f"infra_error:{result.infra_error_kind}", "resets_at": self.clock() + INFRA_PAUSE_S},
                 )
-            return  # same phase runs again; infra failures do not count as attempts
+            return True
         if result.status == "cancelled":
             self.block("agent run was cancelled")
-            return
+            return True
         self._infra_failures = 0
-        st = self.state()
-        self.enter("MILESTONE", milestone=st["milestone"], phase="verify")
+        return False
 
     def _next_run_id(self) -> str:
         count = sum(1 for e in self.log.read() if e["type"] == "AGENT_STARTED")
         return f"r-{count + 1:04d}"
 
-    def _run_agent(self, role: str, prompt: str, step_id: str, resume_session: str | None) -> AgentResult:
+    def _run_agent(
+        self,
+        role: str,
+        prompt: str,
+        step_id: str,
+        resume_session: str | None,
+        *,
+        json_schema: dict[str, Any] | None = None,
+        cwd: Path | None = None,
+        add_dirs: list[Path] | None = None,
+    ) -> AgentResult:
         role_model = self.cfg.roles[role]
         policy = policy_for(role)
         run_id = self._next_run_id()
@@ -270,8 +341,9 @@ class Pipeline:
             prompt=prompt,
             model=role_model.model_id,
             effort=role_model.effort,
-            cwd=self.project.repo_dir,
-            add_dirs=[self.project.scratch_dir],
+            cwd=cwd or self.project.repo_dir,
+            add_dirs=[self.project.scratch_dir] if add_dirs is None else add_dirs,
+            json_schema=json_schema,
             transcript_path=run_dir / "transcript.jsonl",
             session_id=session_id,
             timeout_s=float(self.run_timeout_min.get(role, 60)) * 60,
@@ -300,6 +372,20 @@ class Pipeline:
         result = self.runner.run(req)
         self.emit("AGENT_FINISHED", {"role": role, "model": req.model, **result.to_event_data()}, **context)
         return result
+
+    def _milestone_passed(self, st: State, sha: str) -> None:
+        repo = self.project.repo()
+        tag = MILESTONE_CHECKPOINTS.get(st["milestone"], f"cp/{st['milestone']}")
+        repo.tag(tag, sha)
+        self.emit("CHECKPOINT_CREATED", {"tag": tag, "commit": sha, "milestone": st["milestone"]})
+        gate = bool((self.cfg.raw.get("gates") or {}).get("human_review_after_prototype", True))
+        nxt = next_milestone(st)
+        if gate and st["milestone"] == "m1":
+            self.enter("HUMAN_REVIEW", milestone=st["milestone"])
+        elif nxt:
+            self.enter("MILESTONE", milestone=nxt, phase="implement")
+        else:
+            self.enter("DONE", milestone=st["milestone"])
 
     # ---- verify --------------------------------------------------------
 
@@ -331,11 +417,7 @@ class Pipeline:
         )
         st = self.state()
         if report.passed:
-            tag = MILESTONE_CHECKPOINTS.get(st["milestone"], f"cp/{st['milestone']}")
-            repo.tag(tag, sha)
-            self.emit("CHECKPOINT_CREATED", {"tag": tag, "commit": sha})
-            gate = bool((self.cfg.raw.get("gates") or {}).get("human_review_after_prototype", True))
-            self.enter("HUMAN_REVIEW" if gate else "DONE", milestone=st["milestone"])
+            self._milestone_passed(st, sha)
             return
         fps = st["verify_fingerprints"]
         if len(fps) >= self.breaker and len(set(fps[-self.breaker :])) == 1:
@@ -344,6 +426,14 @@ class Pipeline:
             self.block(f"verify still failing after {self.max_fix_attempts} fix attempts")
         else:
             self.enter("MILESTONE", milestone=st["milestone"], phase="fix")
+
+
+def next_milestone(st: State) -> str | None:
+    milestones = (st["plan"] or {}).get("milestones") or []
+    if st["milestone"] not in milestones:
+        return None
+    i = milestones.index(st["milestone"])
+    return milestones[i + 1] if i + 1 < len(milestones) else None
 
 
 def _copy_report(report_dir: Path, target: Path) -> None:
@@ -369,6 +459,23 @@ def request_revision(project: Project, comment: str) -> None:
             {"state": "MILESTONE", "milestone": st["milestone"], "phase": "revise"},
             project=project.name,
         )
+
+
+def approve(project: Project) -> str:
+    """Record the human decision `approve` at HUMAN_REVIEW; returns the next state."""
+    with ProjectLock(project.lock_path):
+        st = project.state()
+        if st["state"] != "HUMAN_REVIEW":
+            raise PipelineError(f"approve is possible only at HUMAN_REVIEW, the project is in {st['state']}")
+        log = project.log()
+        log.append("HUMAN_DECISION", {"decision": "approve"}, project=project.name)
+        nxt = next_milestone(st)
+        if nxt:
+            log.append("STATE_ENTERED", {"state": "MILESTONE", "milestone": nxt, "phase": "implement"},
+                       project=project.name)
+            return f"MILESTONE {nxt}"
+        log.append("STATE_ENTERED", {"state": "DONE", "milestone": st["milestone"]}, project=project.name)
+        return "DONE"
 
 
 def utc_from_epoch(ts: float | None) -> str | None:

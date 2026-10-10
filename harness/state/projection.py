@@ -24,8 +24,9 @@ INITIAL_STATE: State = {
     "created_at": None,
     "state": None,
     "milestone": None,
-    "phase": None,  # inside a milestone: implement | verify | fix
-    "attempt": 0,  # finished implement/fix steps in the current milestone
+    "phase": None,  # inside a milestone: implement | verify | evaluate | fix | revise
+    "attempt": 0,  # finished plan (in SPEC) or implement/fix/revise steps in the current milestone
+    "plan": None,  # {title, milestones: [ids]} once the Planner's plan is accepted
     "last_verify": None,
     "verify_fingerprints": [],  # failure fingerprints of consecutive failed verifies
     "paused": None,  # where to return after PAUSED
@@ -101,7 +102,7 @@ def _step_finished(s: State, e: Event) -> None:
     s["open_step"] = None
     s["counters"]["steps_finished"] += 1
     # Only steps that really ran to an end count as attempts.
-    if e["data"].get("kind") in ("implement", "fix", "revise") and e["data"].get("status") not in NOT_AN_ATTEMPT:
+    if e["data"].get("kind") in ("plan", "implement", "fix", "revise") and e["data"].get("status") not in NOT_AN_ATTEMPT:
         s["attempt"] += 1
 
 
@@ -148,6 +149,10 @@ def _human_decision(s: State, e: Event) -> None:
         s["verify_fingerprints"] = []
 
 
+def _plan_accepted(s: State, e: Event) -> None:
+    s["plan"] = {"title": e["data"].get("title"), "milestones": list(e["data"].get("milestones") or [])}
+
+
 def _blocked(s: State, e: Event) -> None:
     s["state"] = "BLOCKED"
     s["blocked_reason"] = e["data"].get("reason")
@@ -166,6 +171,7 @@ REDUCERS: dict[str, Callable[[State, Event], None]] = {
     "PAUSED": _paused,
     "HUMAN_DECISION": _human_decision,
     "VERIFY_FINISHED": _verify_finished,
+    "PLAN_ACCEPTED": _plan_accepted,
 }
 
 
