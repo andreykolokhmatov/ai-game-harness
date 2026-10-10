@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from harness.config import Config
-from harness.orchestrator import evaluator, planner
+from harness.orchestrator import escalation, evaluator, planner
 from harness.platform.env import agent_env, write_shim
 from harness.project import Project
 from harness.prompts.builder import render, write_system_prompt
@@ -83,6 +83,7 @@ class Pipeline:
         self.max_turns = limits.get("max_turns") or {}
         self.idle_min = limits.get("idle_output_timeout_min")
         self.max_milestones = int(limits.get("max_milestones", 3))
+        self.escalate_after = int(limits.get("escalate_after_attempts", 2))
 
     # ---- state helpers -------------------------------------------------
 
@@ -125,16 +126,7 @@ class Pipeline:
         if phase == "implement":
             self._agent_step(st, "implement", self._milestone_prompt(st["milestone"]))
         elif phase == "fix":
-            last = st["last_failure"] or st["last_verify"] or {}
-            prompt = render(
-                "tasks/fix",
-                report_dir=(self.project.scratch_dir / LAST_REPORT).as_posix(),
-                attempt=st["attempt"],
-                max_attempts=1 + self.max_fix_attempts,
-                sha=(last.get("sha") or "")[:12],
-                failures=last.get("digest") or "(no details)",
-            )
-            self._agent_step(st, "fix", prompt)
+            self._fix(st)
         elif phase == "revise":
             self._agent_step(st, "revise", render("tasks/revise", comment=st["review_comment"] or ""))
         elif phase == "verify":
@@ -152,6 +144,39 @@ class Pipeline:
                    "Earlier milestones are done and accepted: keep everything that works.")
         return render("tasks/milestone", milestone_id=m["id"], title=m["title"], goal=m["goal"],
                       criteria=planner.criteria_text(m["criteria"]), context=context)
+
+    def _fix(self, st: State) -> None:
+        last = st["last_failure"] or st["last_verify"] or {}
+        tier = escalation.pick_tier(self.cfg, st["verify_fingerprints"], self.escalate_after)
+        values = {
+            "report_dir": (self.project.scratch_dir / LAST_REPORT).as_posix(),
+            "attempt": st["attempt"],
+            "max_attempts": 1 + self.max_fix_attempts,
+            "sha": (last.get("sha") or "")[:12],
+            "failures": last.get("digest") or "(no details)",
+        }
+        if tier.role == "debugger":
+            prompt = render("tasks/debug", milestone_id=st["milestone"], history=self._failure_history(st), **values)
+        else:
+            prompt = render("tasks/fix", **values)
+        if tier.tier > 0:
+            self.emit("ESCALATED", {"tier": tier.tier, "role": tier.role, "model": tier.model_id, "effort": tier.effort},
+                      milestone=st["milestone"])
+        self._agent_step(st, "fix", prompt, tier=tier)
+
+    def _failure_history(self, st: State) -> str:
+        """Failed checks of the current milestone since it started or was last revised."""
+        lines = []
+        for e in self.log.read():
+            if e["type"] == "STATE_ENTERED" and e["data"].get("phase") in ("implement", "revise") \
+                    and e["data"].get("milestone") == st["milestone"]:
+                lines = []
+            if e["type"] in ("VERIFY_FINISHED", "EVAL_FINISHED") and not e["data"].get("passed") \
+                    and e.get("milestone") == st["milestone"]:
+                source = "verify" if e["type"] == "VERIFY_FINISHED" else "evaluator"
+                first = (e["data"].get("digest") or "").strip().splitlines()[:3]
+                lines.append(f"- {source} on {e['data']['sha'][:12]}: " + " / ".join(s.strip() for s in first))
+        return "\n".join(lines) or "- (none recorded)"
 
     # ---- SPEC: the Planner ------------------------------------------------
 
@@ -222,6 +247,7 @@ class Pipeline:
                 interruptions=interruptions + 1,
                 start_commit=step["start_commit"],
                 step_id=step["step_id"],
+                tier=escalation.tier_by_number(self.cfg, int(step.get("tier") or 0)) if step.get("tier") else None,
             )
             return
         repo.reset_hard(step["start_commit"])
@@ -247,6 +273,7 @@ class Pipeline:
         interruptions: int | None = None,
         start_commit: str | None = None,
         step_id: str | None = None,
+        tier: escalation.Tier | None = None,
     ) -> None:
         repo = self.project.repo()
         if start_commit is None:
@@ -261,11 +288,14 @@ class Pipeline:
         step_id = step_id or f"{milestone}.{kind}.{st['attempt'] + 1}"
         self.emit(
             "STEP_STARTED",
-            {"kind": kind, "attempt": st["attempt"] + 1, "start_commit": start_commit, "interruptions": interruptions},
+            {"kind": kind, "attempt": st["attempt"] + 1, "start_commit": start_commit, "interruptions": interruptions,
+             "tier": tier.tier if tier else 0},
             milestone=milestone,
             step_id=step_id,
         )
-        result = self._run_agent("engineer", prompt, step_id, resume_session)
+        role = tier.role if tier else "engineer"
+        result = self._run_agent(role, prompt, step_id, resume_session,
+                                 model=tier.model_id if tier else None, effort=tier.effort if tier else None)
         commit = repo.commit_all(f"harness: {step_id} ({result.status})") or repo.head()
         repo.tag(f"h/{step_id}")
         self.emit(
@@ -321,8 +351,11 @@ class Pipeline:
         cwd: Path | None = None,
         add_dirs: list[Path] | None = None,
         scratch: Path | None = None,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> AgentResult:
         role_model = self.cfg.roles[role]
+        model_id = model or role_model.model_id
         policy = policy_for(role)
         run_id = self._next_run_id()
         run_dir = self.project.runs_dir / run_id
@@ -338,7 +371,7 @@ class Pipeline:
         (run_dir / "prompt.md").write_text(prompt, encoding="utf-8")
         shim = write_shim(self.project.bin_dir, "godot", self.godot_bin)
         aliases = self.cfg.models_raw.get("models") or {}
-        fallbacks = [aliases[a] for a in self.cfg.models_raw.get("fallback") or [] if aliases.get(a) != role_model.model_id]
+        fallbacks = [aliases[a] for a in self.cfg.models_raw.get("fallback") or [] if aliases.get(a) != model_id]
         settings: dict[str, Any] = {"permissions": {"allow": [], "deny": []}}
         settings.update(sandbox_settings(bool(self.cfg.raw.get("sandbox", True))))
         session_id = resume_session or str(uuid.uuid4())
@@ -346,8 +379,8 @@ class Pipeline:
             run_id=run_id,
             role=role,
             prompt=prompt,
-            model=role_model.model_id,
-            effort=role_model.effort,
+            model=model_id,
+            effort=effort or role_model.effort,
             cwd=cwd or self.project.repo_dir,
             add_dirs=[self.project.scratch_dir] if add_dirs is None else add_dirs,
             json_schema=json_schema,

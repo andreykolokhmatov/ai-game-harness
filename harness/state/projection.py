@@ -109,6 +109,7 @@ def _step_started(s: State, e: Event) -> None:
         "start_commit": e["data"].get("start_commit"),
         "session_id": None,
         "interruptions": e["data"].get("interruptions", 0),
+        "tier": e["data"].get("tier", 0),
     }
 
 

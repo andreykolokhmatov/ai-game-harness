@@ -357,3 +357,25 @@ def test_same_evaluator_finding_opens_the_circuit_breaker(cfg_eval):
     project, pipeline = make(cfg_eval, MockRunner(responses), verify_requires("game.gd"))
     st = pipeline.run()
     assert st["state"] == "BLOCKED" and "circuit breaker" in st["blocked_reason"]
+
+
+def test_fix_steps_escalate_to_the_debugger(cfg):
+    runner = MockRunner([MockResponse(files={f"f{i}.txt": str(i)}) for i in range(4)] + [MockResponse(files={"game.gd": "x"})])
+    counter = {"n": 0}
+
+    def verify(repo, sha, out):
+        counter["n"] += 1
+        if (repo / "game.gd").exists():
+            return VerifyReport(sha, True, [CheckResult("smoke", "pass", "ok")])
+        msg = f"ERROR: failure kind {'abcdef'[counter['n']]}"
+        return VerifyReport(sha, False, [CheckResult("smoke", "fail", msg, errors=[{"message": msg, "at": None}])])
+
+    project, pipeline = make(cfg, runner, verify)
+    assert pipeline.run()["state"] == "HUMAN_REVIEW"
+    reqs = runner.requests
+    assert [(r.role, r.effort) for r in reqs] == [
+        ("engineer", "medium"), ("engineer", "medium"), ("engineer", "high"), ("debugger", "high"), ("debugger", "high")]
+    assert reqs[3].system_append_file.read_text(encoding="utf-8").startswith("# Role: Debugger")
+    assert "Failure history" in reqs[3].prompt and "failure kind b" in reqs[3].prompt
+    escalated = [e["data"]["tier"] for e in project.log().read() if e["type"] == "ESCALATED"]
+    assert escalated == [1, 2, 2]
